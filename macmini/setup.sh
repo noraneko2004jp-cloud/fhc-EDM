@@ -21,8 +21,12 @@ sudo networksetup -setnetworkserviceenabled Wi-Fi off 2>/dev/null || true
 install_plist(){ # $1=テンプレート $2=ラベル
   sed -e "s|__USER__|$USER_NAME|g" -e "s|__REPO__|$REPO|g" "$1" | sudo tee "$LD/$2.plist" >/dev/null
   sudo chown root:wheel "$LD/$2.plist"; sudo chmod 644 "$LD/$2.plist"
+  plutil -lint "$LD/$2.plist" >/dev/null || { echo "$2.plist の書式が不正です"; exit 1; }
   sudo launchctl bootout "system/$2" 2>/dev/null || true
-  sudo launchctl bootstrap system "$LD/$2.plist"
+  for i in $(seq 1 10); do sudo launchctl print "system/$2" >/dev/null 2>&1 || break; sleep 1; done  # 停止完了を待つ
+  sudo launchctl enable "system/$2"
+  for i in 1 2 3; do sudo launchctl bootstrap system "$LD/$2.plist" && return 0; sleep 2; done
+  echo "$2 を起動できませんでした。次の出力を確認してください:"; sudo launchctl print "system/$2" 2>&1 | head -20; exit 1
 }
 
 say "Ollama（ログインなしで起動・GPU優先）"
@@ -56,7 +60,6 @@ echo "自動テスト OK"
 if [ "${1:-}" = "--worker" ]; then
   say "解析ワーカーを常駐"
   [ -f "$REPO/worker/.env" ] || { echo "worker/.env がありません（worker/.env.example をコピーして編集）"; exit 1; }
-  sudo launchctl bootout system/com.dwgfind.worker 2>/dev/null || true
   (cd "$REPO/worker" && .venv/bin/python -m dwgworker check)
   install_plist "$REPO/macmini/launchd/com.dwgfind.worker.plist" com.dwgfind.worker
   echo "ログ: tail -f ~/Library/Logs/dwgfind-worker.log"

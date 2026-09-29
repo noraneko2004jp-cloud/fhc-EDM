@@ -4,6 +4,7 @@
   python -m dwgworker work --once  たまっているジョブを処理して終わる
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
   python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用）
+  python -m dwgworker probe [smb://サーバー/共有]  ファイルサーバーに接続し、直下のフォルダと件数を表示（読み取りのみ）
 """
 from __future__ import annotations
 
@@ -62,9 +63,38 @@ def do_work(api: Api, pool: ProcessPoolExecutor, once=False, deadline=None):
             return done
 
 
+def probe(root, seconds=120):
+    """マウントせずに SMB で直接つなぎ、直下のフォルダ一覧と DXF/PDF の件数を数える。"""
+    import getpass
+    from pathlib import PurePosixPath
+
+    if not root.startswith("smb://"):
+        print("smb://サーバー/共有名 の形で指定してください"); return 1
+    user = CONFIG.smb_user or input("ファイルサーバーのユーザー名（ドメインがあれば DOMAIN\\名前）: ")
+    pw = CONFIG.smb_password or getpass.getpass("パスワード（表示されません）: ")
+    CONFIG.smb_user, CONFIG.smb_password, CONFIG.source_root = user, pw, root
+    smb = source._smb_login(root)
+    top = source._unc(root)
+    print("== 直下のフォルダ ==")
+    for e in sorted(smb.scandir(top), key=lambda e: e.name):
+        if e.is_dir():
+            print("  " + e.name)
+    t, n, stack = time.time(), {"dxf": 0, "pdf": 0}, [top]
+    while stack and time.time() - t < seconds:
+        for e in smb.scandir(stack.pop()):
+            if e.is_dir():
+                stack.append(e.path)
+            else:
+                ext = PurePosixPath(e.name).suffix.lower()[1:]
+                if ext in n:
+                    n[ext] += 1
+    print(f"== {time.time() - t:.0f}秒で数えた件数 == DXF {n['dxf']} / PDF {n['pdf']}", "（途中で打ち切り）" if stack else "（全件）")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="dwgworker")
-    ap.add_argument("cmd", choices=["check", "scan", "work", "run", "parse"])
+    ap.add_argument("cmd", choices=["check", "scan", "work", "run", "parse", "probe"])
     ap.add_argument("file", nargs="?")
     ap.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
@@ -81,6 +111,9 @@ def main(argv=None):
         print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
         print(f"サムネイル: {len(thumb) if thumb else 0} bytes")
         return 0
+
+    if a.cmd == "probe":
+        return probe(a.file or CONFIG.source_root)
 
     api = Api()
     if a.cmd == "check":
