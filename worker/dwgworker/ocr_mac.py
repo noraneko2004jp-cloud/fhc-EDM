@@ -65,3 +65,17 @@ def ocr_page(page, dpi=300) -> list[dict]:
     # 上から下、左から右の順に並べる
     items.sort(key=lambda i: (-round(i["y"] + i["h"], -1), i["x"]))
     return items
+
+
+def lines(items: list[dict]) -> list[str]:
+    """同じ高さに並んだ文字のかたまりを左から右へ 1 行にまとめる（表の行を 1 行として読むため）。"""
+    rows = []
+    for it in sorted(items, key=lambda i: -(i["y"] + i["h"] / 2)):
+        cy = it["y"] + it["h"] / 2
+        for r in rows:
+            if abs(r["cy"] - cy) < max(r["h"], it["h"]) * 0.5:
+                r["items"].append(it)
+                break
+        else:
+            rows.append({"cy": cy, "h": it["h"], "items": [it]})
+    return [" ".join(i["text"] for i in sorted(r["items"], key=lambda i: i["x"])) for r in rows]

@@ -24,9 +24,10 @@ def index(request):
 def detail(request, pk):
     d = get_object_or_404(Drawing.objects.select_related("file"), pk=pk)
     AuditLog.objects.create(user=request.user, action=AuditLog.Action.VIEW, target=d.file.path)
-    revisions = Drawing.objects.filter(drawing_no=d.drawing_no).exclude(pk=d.pk) if d.drawing_no else []
+    revisions = Drawing.objects.filter(drawing_no=d.drawing_no).exclude(pk=d.pk).select_related("file") if d.drawing_no else []
+    siblings = d.file.drawings.exclude(pk=d.pk).order_by("page_no")  # 同じ図面一式の他のページ
     return render(request, "drawings/detail.html", {
-        "d": d, "bom": d.bom_items.all(), "revisions": revisions, "q": request.GET.get("q", ""),
+        "d": d, "bom": d.bom_items.all(), "revisions": revisions, "siblings": siblings, "q": request.GET.get("q", ""),
     })
 
 

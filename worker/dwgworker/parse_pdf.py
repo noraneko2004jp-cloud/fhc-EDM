@@ -1,8 +1,8 @@
-"""PDF の解析：テキスト層（なければ OCR）の文字を座標付きで取り出し、表題欄を読み、1 ページ目の PNG サムネイルを作る。
+"""PDF の解析：テキスト層（なければ OCR）の文字を座標付きで取り出し、表題欄を読み、サムネイルを作る。
 
-2026-09-29 の実図面確認では「図面原紙･資料 PDF」「図面 … PDF」はほぼすべてコピー機（RICOH）で
-取り込んだ画像だけの PDF だったため、Mac mini では macOS Vision で OCR する。
-1 つの PDF に複数の図面（ページごとに別の図番）が入っている「図面一式」もある。
+2026-09-29 の実図面確認では、図面の PDF はほぼすべてコピー機（RICOH）で取り込んだ画像だけの PDF だったため、
+Mac mini では macOS Vision で OCR する。
+「図面一式」のように 1 つの PDF の各ページが別の図面（別の図番）になっているものは、ページごとに別の図面として返す。
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ log = logging.getLogger("dwgworker")
 MIN_CHARS_PER_PAGE = 30
 # 表題欄を探す範囲（ページ右下。幅・高さに対する比率）
 TB_X_MIN, TB_Y_MAX = 0.55, 0.22
+SIMPLE_FIELDS = ("drawing_no", "revision", "title", "material", "scale", "drawn_date")
+EXTRA_FIELDS = ("model", "sheet_title", "sheet_no", "job_no", "file_title")
 
 
 def _text_items(page) -> list[dict]:
@@ -46,62 +48,87 @@ def title_block_codes(items: list[dict], page) -> list[str]:
     return found
 
 
-def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
-    doc = pymupdf.open(stream=data, filetype="pdf")
-    pages, first_items = [], []
-    scanned = ocr_pages = 0
-    page_codes = {}
-    ocr_seconds = 0.0
-    for i, page in enumerate(doc):
-        text = page.get_text("text")
-        items = _text_items(page)
-        source = "text"
-        if len(text.strip()) < MIN_CHARS_PER_PAGE:
-            scanned += 1
-            if CONFIG.ocr_enabled and ocr_mac.available() and ocr_pages < CONFIG.ocr_max_pages:
-                t0 = time.time()
-                try:
-                    items = ocr_mac.ocr_page(page, dpi=CONFIG.ocr_dpi)
-                    text = "\n".join(it["text"] for it in items)
-                    source = "ocr"
-                    ocr_pages += 1
-                except Exception as e:
-                    log.warning("OCR に失敗 %s p%d: %s", path, i + 1, e)
-                ocr_seconds += time.time() - t0
-        text = titleblock.compact_codes(titleblock.norm(text))
-        codes = title_block_codes(items, page)
-        if codes:
-            page_codes[i + 1] = codes
-        all_codes = titleblock.find_codes(text)
-        if all_codes:
-            text += "\n[図番・品番] " + " ".join(all_codes)
-        pages.append({"page_no": i + 1, "text": text, "text_source": source})
-        if i == 0:
-            first_items = items
-    fields, source, conf = titleblock.resolve(path, [], first_items, base_source="text")
-    needs_ocr = scanned > ocr_pages
-    if ocr_pages:
-        if source != "filename":
+def _thumb(page) -> bytes:
+    zoom = CONFIG.thumb_width / max(page.rect.width, page.rect.height, 1)
+    return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
+
+
+def _read_page(page, path, i, budget) -> dict:
+    text = page.get_text("text")
+    items = _text_items(page)
+    source, secs = "text", 0.0
+    scanned = len(text.strip()) < MIN_CHARS_PER_PAGE
+    if scanned and CONFIG.ocr_enabled and ocr_mac.available() and budget > 0:
+        t0 = time.time()
+        try:
+            items = ocr_mac.ocr_page(page, dpi=CONFIG.ocr_dpi)
+            text = "\n".join(ocr_mac.lines(items))
             source = "ocr"
-        if not fields["drawing_no"] and page_codes.get(1):  # ファイル名に図番がなければ表題欄の最下段の図番
-            fields["drawing_no"] = page_codes[1][0]
-            conf = min(conf, 0.75) if conf > 0.3 else 0.7
-    elif needs_ocr and source != "filename":
+        except Exception as e:
+            log.warning("OCR に失敗 %s p%d: %s", path, i + 1, e)
+        secs = time.time() - t0
+    text = titleblock.compact_codes(titleblock.norm(text))
+    codes = titleblock.find_codes(text)
+    if codes:
+        text += "\n[図番・品番] " + " ".join(codes)
+    return {"page_no": i + 1, "text": text, "text_source": source, "items": items, "scanned": scanned,
+            "tb_codes": title_block_codes(items, page), "seconds": secs}
+
+
+def _drawing(fields, source, conf, needs_ocr, attrs):
+    return {**{k: fields.get(k, "") for k in SIMPLE_FIELDS}, "source": source, "confidence": conf, "needs_ocr": needs_ocr,
+            "attributes": {**attrs, **{k: fields[k] for k in EXTRA_FIELDS if fields.get(k)}}}
+
+
+def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
+    """({"drawings": [...]}, {ページ番号: サムネイルPNG}) を返す。"""
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    pages = []
+    ocr_left = CONFIG.ocr_max_pages
+    for i, page in enumerate(doc):
+        p = _read_page(page, path, i, ocr_left)
+        if p["text_source"] == "ocr":
+            ocr_left -= 1
+        pages.append(p)
+    common = {"pages": len(doc), "producer": doc.metadata.get("producer", ""),
+              "scanned_pages": sum(p["scanned"] for p in pages),
+              "ocr_pages": sum(p["text_source"] == "ocr" for p in pages),
+              "ocr_seconds": round(sum(p["seconds"] for p in pages), 1)}
+    fields, source, conf = titleblock.resolve(path, [], pages[0]["items"] if pages else [], base_source="text")
+    any_ocr = common["ocr_pages"] > 0
+    needs_ocr = common["scanned_pages"] > common["ocr_pages"]
+    if (any_ocr or needs_ocr) and source not in ("filename",):
         source = "ocr"
-    thumb = None
-    if len(doc):
-        p0 = doc[0]
-        zoom = CONFIG.thumb_width / max(p0.rect.width, p0.rect.height, 1)
-        thumb = p0.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
-    result = {
-        "drawing": {**{k: fields[k] for k in ("drawing_no", "revision", "title", "material", "scale", "drawn_date")},
-                    "source": source, "confidence": conf, "needs_ocr": needs_ocr,
-                    "attributes": {"pages": len(doc), "scanned_pages": scanned, "ocr_pages": ocr_pages,
-                                   "ocr_seconds": round(ocr_seconds, 1), "producer": doc.metadata.get("producer", ""),
-                                   "page_codes": page_codes,
-                                   **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]}}},
-        "pages": pages,
-        "bom": [],
-        "items": first_items,
-    }
-    return result, thumb
+
+    # 図面一式：2 ページ以上で表題欄に図番があれば、ページごとに別の図面にする
+    split = len(pages) > 1 and sum(1 for p in pages if p["tb_codes"]) >= 2
+    drawings, thumbs = [], {}
+    if split:
+        for p in pages:
+            f = dict(fields)
+            f["drawing_no"] = p["tb_codes"][0] if p["tb_codes"] else ""
+            pf, _, _ = titleblock.resolve("", [], p["items"])  # そのページの表題欄の名称・尺度など
+            for k in ("title", "material", "scale", "drawn_date", "sheet_title"):
+                f[k] = pf.get(k, "")
+            if not f["title"]:
+                f["title"] = f"{fields.get('title', '')}（{p['page_no']}/{len(pages)}）".strip()
+            f["file_title"] = fields.get("title", "")
+            pconf = 0.75 if p["tb_codes"] else 0.4
+            attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5]}
+            drawings.append({"page_no": p["page_no"],
+                             "drawing": _drawing(f, "ocr" if p["text_source"] == "ocr" else source, pconf,
+                                                 p["scanned"] and p["text_source"] != "ocr", attrs),
+                             "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]}],
+                             "bom": []})
+            thumbs[p["page_no"]] = _thumb(doc[p["page_no"] - 1])
+    else:
+        if not fields["drawing_no"] and pages and pages[0]["tb_codes"]:  # ファイル名に図番がなければ表題欄の図番
+            fields["drawing_no"] = pages[0]["tb_codes"][0]
+            conf = 0.75
+        attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else []}
+        drawings.append({"page_no": 1, "drawing": _drawing(fields, source, conf, needs_ocr, attrs),
+                         "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]} for p in pages],
+                         "bom": []})
+        if len(doc):
+            thumbs[1] = _thumb(doc[0])
+    return {"drawings": drawings, "items": pages[0]["items"] if pages else []}, thumbs

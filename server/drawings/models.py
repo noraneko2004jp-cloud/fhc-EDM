@@ -40,7 +40,7 @@ class SourceFile(models.Model):
 
 
 class Drawing(models.Model):
-    """1 ファイルから読み取った図面情報。"""
+    """1 ファイル（図面一式の PDF はそのうちの 1 ページ）から読み取った図面情報。"""
 
     class Source(models.TextChoices):
         ATTRIB = "attrib", "DXF属性"
@@ -48,7 +48,8 @@ class Drawing(models.Model):
         OCR = "ocr", "OCR"
         FILENAME = "filename", "ファイル名"
 
-    file = models.OneToOneField(SourceFile, on_delete=models.CASCADE, related_name="drawing")
+    file = models.ForeignKey(SourceFile, on_delete=models.CASCADE, related_name="drawings")
+    page_no = models.PositiveIntegerField("ページ", default=1, help_text="図面一式の PDF で、この図面が載っているページ")
     drawing_no = models.CharField("図番", max_length=64, blank=True, db_index=True)
     revision = models.CharField("改訂", max_length=16, blank=True)
     title = models.CharField("品名", max_length=255, blank=True)
@@ -67,6 +68,7 @@ class Drawing(models.Model):
     class Meta:
         verbose_name = verbose_name_plural = "図面"
         ordering = ["drawing_no", "revision"]
+        constraints = [models.UniqueConstraint(fields=["file", "page_no"], name="drawing_file_page_unique")]
         # search_text は保存時に NFKC＋大文字へ正規化済み。LIKE '%語%' を trigram 索引で高速化する
         indexes = [GinIndex(fields=["search_text"], opclasses=["gin_trgm_ops"], name="drawing_search_trgm")]
 

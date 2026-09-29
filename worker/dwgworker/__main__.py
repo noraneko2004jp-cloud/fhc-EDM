@@ -54,7 +54,7 @@ def do_work(api: Api, pool: ProcessPoolExecutor, once=False, deadline=None):
             return done
         for out in pool.map(process, jobs):
             if out["ok"]:
-                api.result(out["job_id"], out["result"], out["thumb"])
+                api.result(out["job_id"], out["result"], out["thumbs"])
                 done += 1
             else:
                 log.warning("ジョブ %s 失敗: %s", out["job_id"], out["error"].splitlines()[0])
@@ -116,12 +116,14 @@ def main(argv=None):
         from pathlib import Path
         from . import parse_dxf, parse_pdf
         p = Path(a.file)
-        res, thumb = (parse_dxf if p.suffix.lower() == ".dxf" else parse_pdf).parse(p.read_bytes(), p.name)
+        res, thumbs = (parse_dxf if p.suffix.lower() == ".dxf" else parse_pdf).parse(p.read_bytes(), p.name)
         res.pop("items", None)
-        for pg in res["pages"]:
-            pg["text"] = pg["text"][:1500 if pg["page_no"] == 1 else 200]
+        for dr in res["drawings"]:
+            for pg in dr["pages"]:
+                pg["text"] = pg["text"][:1500 if pg["page_no"] == dr["page_no"] else 200]
+            dr["drawing"]["attributes"].pop("attribs", None)
         print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
-        print(f"サムネイル: {len(thumb) if thumb else 0} bytes")
+        print(f"図面 {len(res['drawings'])} 件 / サムネイル {len(thumbs)} 枚")
         return 0
 
     if a.cmd == "probe":

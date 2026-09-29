@@ -109,7 +109,7 @@ def fix_japanese_codepage(data: bytes) -> tuple[bytes, bool]:
     return data[:v.end()] + ins + data[v.end():], True
 
 
-def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
+def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
     data, cp_fixed = fix_japanese_codepage(data)
     doc, auditor = recover.read(io.BytesIO(data))
     msp = doc.modelspace()
@@ -130,15 +130,16 @@ def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
     except Exception as e:  # サムネイルが作れなくても文字の読み取り結果は登録する
         thumb_error = f"{type(e).__name__}: {e}"[:300]
         log.warning("サムネイル作成に失敗 %s: %s", path, thumb_error)
+    drawing = {**{k: fields[k] for k in ("drawing_no", "revision", "title", "material", "scale", "drawn_date")},
+               "source": source, "confidence": conf, "needs_ocr": False,
+               "attributes": {"dxf_version": doc.dxfversion, "codepage": doc.header.get("$DWGCODEPAGE", ""),
+                              "audit_errors": len(auditor.errors), "codepage_fixed": cp_fixed, "attribs": attribs[:200],
+                              **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]},
+                              **({"thumb_error": thumb_error} if thumb_error else {})}}
     result = {
-        "drawing": {**{k: fields[k] for k in ("drawing_no", "revision", "title", "material", "scale", "drawn_date")},
-                    "source": source, "confidence": conf, "needs_ocr": False,
-                    "attributes": {"dxf_version": doc.dxfversion, "codepage": doc.header.get("$DWGCODEPAGE", ""),
-                                   "audit_errors": len(auditor.errors), "codepage_fixed": cp_fixed, "attribs": attribs[:200],
-                                   **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]},
-                                   **({"thumb_error": thumb_error} if thumb_error else {})}},
-        "pages": [{"page_no": 1, "text": text, "text_source": "attrib" if attribs else "text"}],
-        "bom": [],  # 部品表の抽出は Phase 2（サンプル図面の形式を見て実装）
+        "drawings": [{"page_no": 1, "drawing": drawing,
+                      "pages": [{"page_no": 1, "text": text, "text_source": "attrib" if attribs else "text"}],
+                      "bom": []}],  # 部品表の抽出は Phase 2
         "items": items,
     }
-    return result, thumb
+    return result, ({1: thumb} if thumb else {})

@@ -39,8 +39,8 @@ class Api:
     def claim(self, limit):
         return self._check(self.s.post(f"{self.base}/jobs/claim", json={"worker": self.name, "limit": limit}, timeout=30))["jobs"]
 
-    def result(self, job_id, data, thumb: bytes | None):
-        files = {"thumbnail": ("thumb.png", thumb, "image/png")} if thumb else None
+    def result(self, job_id, data, thumbs: dict[int, bytes]):
+        files = {f"thumb_{n}": (f"thumb_{n}.png", b, "image/png") for n, b in (thumbs or {}).items() if b} or None
         return self._check(self.s.post(f"{self.base}/jobs/{job_id}/result", data={"data": json.dumps(data, ensure_ascii=False)}, files=files, timeout=120))
 
     def fail(self, job_id, error, permanent=False):

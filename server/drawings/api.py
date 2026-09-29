@@ -153,6 +153,53 @@ def _num(v):
     except ValueError:
         return None
 
+def _save_drawing(request, f, page_no, d, pages, bom):
+    drawing, _ = Drawing.objects.update_or_create(file=f, page_no=page_no, defaults={
+        "drawing_no": (d.get("drawing_no") or "")[:64],
+        "revision": (d.get("revision") or "")[:16],
+        "title": (d.get("title") or "")[:255],
+        "material": (d.get("material") or "")[:128],
+        "scale": (d.get("scale") or "")[:32],
+        "drawn_date": (d.get("drawn_date") or "")[:32],
+        "source": d.get("source") or Drawing.Source.TEXT,
+        "confidence": float(d.get("confidence", 1.0)),
+        "needs_ocr": bool(d.get("needs_ocr")),
+        "attributes": d.get("attributes") or {},
+    })
+    drawing.pages.all().delete()
+    Page.objects.bulk_create([
+        Page(drawing=drawing, page_no=int(p.get("page_no", i + 1)), text=p.get("text", ""),
+             text_source=p.get("text_source") or drawing.source)
+        for i, p in enumerate(pages)
+    ])
+    drawing.bom_items.all().delete()
+    BomItem.objects.bulk_create([
+        BomItem(drawing=drawing, row=i + 1, item_no=str(b.get("item_no", ""))[:16],
+                part_no=str(b.get("part_no", ""))[:64], name=str(b.get("name", ""))[:255],
+                qty=_num(b.get("qty")), material=str(b.get("material", ""))[:128],
+                ref_drawing_no=str(b.get("ref_drawing_no", ""))[:64], raw_text=str(b.get("raw_text", "")),
+                confidence=float(b.get("confidence", 1.0)))
+        for i, b in enumerate(bom)
+    ])
+    thumb = request.FILES.get(f"thumb_{page_no}") or (request.FILES.get("thumbnail") if page_no == 1 else None)
+    if thumb:
+        rel = f"thumbs/{f.id // 1000:04d}/{f.id}_{page_no}.png"
+        dest = Path(settings.MEDIA_ROOT) / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as out:
+            for chunk in thumb.chunks():
+                out.write(chunk)
+        drawing.thumbnail = rel
+    attrs = drawing.attributes or {}
+    drawing.search_text = build_search_text(
+        drawing.drawing_no, drawing.revision, drawing.title, drawing.material, f.path,
+        *[attrs.get(k, "") for k in ("model", "job_no", "sheet_title", "file_title")],
+        *[" ".join([b.part_no, b.name, b.material, b.ref_drawing_no]) for b in drawing.bom_items.all()],
+        *[(p.get("text") or "")[:6000] for p in pages],
+    )
+    drawing.save()
+    return drawing
+
 
 @require_POST
 @worker_api
@@ -166,61 +213,24 @@ def result(request, job_id):
     except (json.JSONDecodeError, UnicodeDecodeError):
         return JsonResponse({"error": "data（JSON）が読めません"}, status=400)
 
-    d = data.get("drawing") or {}
-    bom = data.get("bom") or []
-    pages = data.get("pages") or []
+    # 新形式：{"drawings": [{"page_no", "drawing", "pages", "bom"}]}。旧形式（drawing/pages/bom を直接）も受け付ける
+    entries = data.get("drawings")
+    if entries is None:
+        entries = [{"page_no": 1, "drawing": data.get("drawing") or {}, "pages": data.get("pages") or [], "bom": data.get("bom") or []}]
     f = job.file
+    ids = []
     with transaction.atomic():
-        drawing, _ = Drawing.objects.update_or_create(file=f, defaults={
-            "drawing_no": (d.get("drawing_no") or "")[:64],
-            "revision": (d.get("revision") or "")[:16],
-            "title": (d.get("title") or "")[:255],
-            "material": (d.get("material") or "")[:128],
-            "scale": (d.get("scale") or "")[:32],
-            "drawn_date": (d.get("drawn_date") or "")[:32],
-            "source": d.get("source") or Drawing.Source.TEXT,
-            "confidence": float(d.get("confidence", 1.0)),
-            "needs_ocr": bool(d.get("needs_ocr")),
-            "attributes": d.get("attributes") or {},
-        })
-        drawing.pages.all().delete()
-        Page.objects.bulk_create([
-            Page(drawing=drawing, page_no=int(p.get("page_no", i + 1)), text=p.get("text", ""),
-                 text_source=p.get("text_source") or drawing.source)
-            for i, p in enumerate(pages)
-        ])
-        drawing.bom_items.all().delete()
-        BomItem.objects.bulk_create([
-            BomItem(drawing=drawing, row=i + 1, item_no=str(b.get("item_no", ""))[:16],
-                    part_no=str(b.get("part_no", ""))[:64], name=str(b.get("name", ""))[:255],
-                    qty=_num(b.get("qty")), material=str(b.get("material", ""))[:128],
-                    ref_drawing_no=str(b.get("ref_drawing_no", ""))[:64], raw_text=str(b.get("raw_text", "")),
-                    confidence=float(b.get("confidence", 1.0)))
-            for i, b in enumerate(bom)
-        ])
-        thumb = request.FILES.get("thumbnail")
-        if thumb:
-            rel = f"thumbs/{f.id // 1000:04d}/{f.id}.png"
-            dest = Path(settings.MEDIA_ROOT) / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with open(dest, "wb") as out:
-                for chunk in thumb.chunks():
-                    out.write(chunk)
-            drawing.thumbnail = rel
-        attrs = drawing.attributes or {}
-        drawing.search_text = build_search_text(
-            drawing.drawing_no, drawing.revision, drawing.title, drawing.material, f.path,
-            *[attrs.get(k, "") for k in ("model", "job_no", "sheet_title", "file_title")],
-            *[" ".join([b.part_no, b.name, b.material, b.ref_drawing_no]) for b in drawing.bom_items.all()],
-            *[(p.get("text") or "")[:4000] for p in pages],
-        )
-        drawing.save()
+        keep = {int(e.get("page_no", 1)) for e in entries}
+        f.drawings.exclude(page_no__in=keep).delete()  # ページ数が減った・分け方が変わった場合の古い図面
+        for e in entries:
+            ids.append(_save_drawing(request, f, int(e.get("page_no", 1)), e.get("drawing") or {}, e.get("pages") or [],
+                                     e.get("bom") or []).id)
         f.sha256 = (data.get("sha256") or "")[:64]
         f.status, f.error = SourceFile.Status.DONE, ""
         f.save(update_fields=["sha256", "status", "error", "updated_at"])
         job.state, job.error = Job.State.DONE, ""
         job.save(update_fields=["state", "error", "updated_at"])
-    return JsonResponse({"ok": True, "drawing_id": drawing.id})
+    return JsonResponse({"ok": True, "drawing_ids": ids})
 
 
 @require_POST

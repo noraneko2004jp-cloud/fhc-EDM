@@ -12,10 +12,10 @@ def process(job: dict) -> dict:
         data = source.read_bytes(job["path"])
         sha = hashlib.sha256(data).hexdigest()
         parser = parse_dxf if job["kind"] == "dxf" else parse_pdf
-        result, thumb = parser.parse(data, job["path"])
+        result, thumbs = parser.parse(data, job["path"])
         result.pop("items", None)
         result["sha256"] = sha
-        return {"ok": True, "job_id": job["job_id"], "result": result, "thumb": thumb}
+        return {"ok": True, "job_id": job["job_id"], "result": result, "thumbs": thumbs}
     except Exception as e:
         return {"ok": False, "job_id": job["job_id"], "error": f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}",
                 "permanent": isinstance(e, (ValueError, FileNotFoundError))}

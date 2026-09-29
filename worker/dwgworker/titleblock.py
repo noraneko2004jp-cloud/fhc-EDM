@@ -38,8 +38,12 @@ FIELD_LABELS = {
     "model": {"型式", "TYPE", "TIPE", "MODEL"},
     "material": {"材質", "MATERIAL"},
     "scale": {"尺度", "SCALE"},
-    "drawn_date": {"日付", "作成日", "製図日", "DATE"},
+    "drawn_date": {"日付", "作成日", "製図日", "年月日", "DATE"},
 }
+# 表題欄の枠に印刷されている項目名。これらは値として拾わない
+FORM_WORDS = {"表面処理", "計算質量", "得意先", "製番", "特記", "認可", "点検", "製図", "尺度", "型式", "名称", "員数", "材質",
+              "特記以外図番", "適用型式又は特記", "組立図番", "計画課", "GROUP", "USER", "DRAW", "CHECK", "三角法", "検査寸法"}
+_DATE_INLINE = re.compile(r"^\s*(年月日|日付|作成日|製図日)\s*[:：]?\s*(\d{2,4}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{1,2})")
 _LABEL_TO_FIELD = {unicodedata.normalize("NFKC", lab).upper(): f for f, labs in FIELD_LABELS.items() for lab in labs}
 _INLINE = re.compile(r"^\s*(" + "|".join(sorted(map(re.escape, _LABEL_TO_FIELD), key=len, reverse=True)) + r")\s*[:：]\s*(.+)$", re.I)
 # 部品表の見出し行に並ぶ語。これが同じ高さに 3 つ以上あれば表の見出しとみなし、表題欄のラベルとして扱わない
@@ -58,8 +62,15 @@ def norm(s):
 
 
 def compact_codes(text: str) -> str:
-    """OCR で「H B 0 0 1 1 X X X X」のように 1 文字ずつ離れて読まれた英数字の並びを詰める。"""
-    return re.sub(r"(?<![A-Z0-9])(?:[A-Z0-9][ \t]+){5,}[A-Z0-9](?![A-Z0-9])", lambda m: re.sub(r"[ \t]+", "", m.group(0)), text)
+    """OCR で離れて読まれた英数字を詰める。
+    ・「H B 0 0 1 1 X X X X」のように 1 文字ずつ空白で離れたもの
+    ・「H.D.B,Y.0,0,3,9,8.0」「HDBY0.0402.0」のように、表題欄の点線を「.」「,」と読んだもの
+      （英字を含み、区切りが 2 つ以上ある語だけ。「0.35」のような小数は変えない）
+    """
+    text = re.sub(r"(?<![A-Z0-9])(?:[A-Z0-9][ \t]+){5,}[A-Z0-9](?![A-Z0-9])", lambda m: re.sub(r"[ \t]+", "", m.group(0)), text)
+    return re.sub(r"[A-Z0-9][A-Z0-9.,]*[A-Z0-9]",
+                  lambda m: re.sub(r"[.,]", "", m.group(0)) if len(re.findall(r"[.,]", m.group(0))) >= 2 and re.search(r"[A-Z]", m.group(0)) else m.group(0),
+                  text)
 
 
 def find_codes(text: str) -> list[str]:
@@ -67,6 +78,8 @@ def find_codes(text: str) -> list[str]:
     seen = []
     for m in re.finditer(CONFIG.drawing_no_regex, compact_codes(norm(text).upper())):
         c = m.group(0)
+        if c.startswith("X"):  # 「914X2443X0.25」のような寸法の掛け算記号を図番と取り違えない
+            continue
         if c not in seen:
             seen.append(c)
     return seen
@@ -94,6 +107,9 @@ def from_positioned(items: list[dict]) -> dict:
         if m:
             f = _LABEL_TO_FIELD[norm(m.group(1)).upper()]
             out.setdefault(f, m.group(2).strip())
+        m = _DATE_INLINE.match(norm(it["text"]))
+        if m:
+            out.setdefault("drawn_date", re.sub(r"\s+", "", m.group(2)))
     for it in items:
         f = _LABEL_TO_FIELD.get(norm(it["text"]).rstrip(":：").upper())
         if not f or f in out:
@@ -104,7 +120,8 @@ def from_positioned(items: list[dict]) -> dict:
             continue  # 部品表の見出し行
         best, best_d = None, None
         for o in items:
-            if o is it or not norm(o["text"]) or norm(o["text"]).upper().rstrip(":：") in _LABEL_TO_FIELD:
+            ot = norm(o["text"]).upper().rstrip(":：")
+            if o is it or not ot or ot in _LABEL_TO_FIELD or ot in FORM_WORDS:
                 continue
             dx, dy = o["x"] - it["x"], o["y"] - it["y"]
             right = 0 < dx < 25 * h and abs(dy) < 0.8 * h
@@ -128,7 +145,7 @@ def from_filename(path: str) -> tuple[dict, bool]:
     name_orig = norm(PurePosixPath(path).stem)
     m = _FN_PART.match(s)
     if m:
-        name = name_orig[len(name_orig) - len(m.group("name")):].strip() if m.group("name") else ""
+        name = name_orig[len(name_orig) - len(m.group("name")):].strip(" _-") if m.group("name") else ""
         return {"drawing_no": m.group("no"), "revision": m.group("rev") or "", "title": name}, True
     m = _FN_JOB.match(s)
     if m:

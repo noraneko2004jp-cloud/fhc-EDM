@@ -64,7 +64,26 @@ class RealConventionTests(unittest.TestCase):
         fixed, changed = parse_dxf.fix_japanese_codepage(body)
         self.assertTrue(changed)
         r, _ = parse_dxf.parse(body, "dxfCAK-40A 喫煙-220323.dxf")
-        self.assertIn("喫煙ハウス", r["pages"][0]["text"])
+        self.assertIn("喫煙ハウス", r["drawings"][0]["pages"][0]["text"])
+
+
+class DrawingSetTests(unittest.TestCase):
+    def test_each_page_becomes_a_drawing(self):
+        import pymupdf
+        doc = pymupdf.open()
+        for no, name in [("HDBY003920", "ハイキパネル/FP"), ("HDBY003930", "フレーム/ハイキパネル"), ("HDBY004010", "アッパーフレーム")]:
+            pg = doc.new_page(width=1190, height=842)
+            pg.insert_text((60, 100), "注記 本図は HUCP240054 に部品を追加したもの " * 2, fontname="japan", fontsize=10)
+            pg.insert_text((860, 790), "名称", fontname="japan", fontsize=8)
+            pg.insert_text((860, 805), name, fontname="japan", fontsize=10)
+            pg.insert_text((1020, 815), no, fontsize=12)
+        r, thumbs = parse_pdf.parse(doc.tobytes(), "20-032 CAK-A 多用途ﾊｳｽ 図面一式.pdf")
+        ds = r["drawings"]
+        self.assertEqual([d["drawing"]["drawing_no"] for d in ds], ["HDBY003920", "HDBY003930", "HDBY004010"])
+        self.assertEqual(ds[1]["drawing"]["title"], "フレーム/ハイキパネル")
+        self.assertEqual(ds[0]["drawing"]["attributes"]["model"], "CAK-A")
+        self.assertEqual(sorted(thumbs), [1, 2, 3])
+        self.assertIn("HUCP240054", ds[2]["pages"][0]["text"])
 
 
 class IncludeTests(unittest.TestCase):
@@ -99,7 +118,9 @@ class SampleParseTests(unittest.TestCase):
     def parse(self, rel):
         p = self.out / rel
         mod = parse_dxf if p.suffix == ".dxf" else parse_pdf
-        return mod.parse(p.read_bytes(), rel)
+        r, thumbs = mod.parse(p.read_bytes(), rel)
+        d = r["drawings"][0]
+        return {"drawing": d["drawing"], "pages": d["pages"], "all": r["drawings"]}, thumbs.get(1)
 
     def test_dxf_attrib(self):
         r, thumb = self.parse("design/UH/UH-3600/派生/UH-3600-01_A.dxf")

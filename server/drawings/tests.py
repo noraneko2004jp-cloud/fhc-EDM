@@ -67,6 +67,30 @@ class WorkerApiTests(TestCase):
         self.assertTrue(d.thumbnail)
         self.assertEqual(d.file.status, SourceFile.Status.DONE)
 
+    def test_drawing_set_pages_become_drawings(self):
+        self.scan([{"path": "set/20-032 CAK-A 図面一式.pdf", "size": 10, "mtime": time.time()}])
+        job = post_json(self.client, "/api/internal/jobs/claim", {"limit": 1}).json()["jobs"][0]
+        data = {"sha256": "cd" * 32, "drawings": [
+            {"page_no": n, "drawing": {"drawing_no": no, "title": t, "source": "ocr", "attributes": {"model": "CAK-A", "pages": 2}},
+             "pages": [{"page_no": n, "text": f"注記 {no}"}], "bom": []}
+            for n, no, t in [(1, "HDBY003920", "ハイキパネル/FP"), (2, "HDBY003930", "フレーム")]]}
+        with tempfile.NamedTemporaryFile(suffix=".png") as a, tempfile.NamedTemporaryFile(suffix=".png") as b:
+            a.write(PNG); a.seek(0); b.write(PNG); b.seek(0)
+            r = self.client.post(f"/api/internal/jobs/{job['job_id']}/result",
+                                 {"data": json.dumps(data), "thumb_1": a, "thumb_2": b}, **AUTH)
+        self.assertEqual(r.status_code, 200, r.content)
+        ds = Drawing.objects.order_by("page_no")
+        self.assertEqual([(d.page_no, d.drawing_no) for d in ds], [(1, "HDBY003920"), (2, "HDBY003930")])
+        self.assertTrue(all(d.thumbnail for d in ds))
+        self.assertIn("CAK-A", ds[0].search_text)
+        # 再解析で 1 ページになったら 2 ページ目の図面は消える
+        SourceFile.objects.update(size=11)
+        self.scan([{"path": "set/20-032 CAK-A 図面一式.pdf", "size": 12, "mtime": time.time()}])
+        job = post_json(self.client, "/api/internal/jobs/claim", {"limit": 1}).json()["jobs"][0]
+        data["drawings"] = data["drawings"][:1]
+        self.client.post(f"/api/internal/jobs/{job['job_id']}/result", {"data": json.dumps(data)}, **AUTH)
+        self.assertEqual(Drawing.objects.count(), 1)
+
     def test_fail_retries_then_gives_up(self):
         self.scan([{"path": "x/UH-2.pdf", "size": 1, "mtime": time.time()}])
         for i in range(3):
