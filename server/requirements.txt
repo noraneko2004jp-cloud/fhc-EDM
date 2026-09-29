@@ -1,0 +1,7 @@
+Django>=5.2,<6
+psycopg[binary]>=3.2
+pgvector>=0.3
+smbprotocol>=1.14
+openpyxl>=3.1
+gunicorn>=23
+whitenoise>=6.7

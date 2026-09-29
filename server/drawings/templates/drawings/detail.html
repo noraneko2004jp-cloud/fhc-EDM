@@ -1,0 +1,33 @@
+{% extends "drawings/base.html" %}{% block title %}{{ d.drawing_no|default:d.file.filename }} - DWG-FIND{% endblock %}{% block content %}
+<p style="margin:0 0 10px"><a href="{% url 'index' %}{% if q %}?q={{ q|urlencode }}{% endif %}">← 検索結果に戻る</a></p>
+<div class="detail">
+  <div class="preview">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のプレビュー">{% else %}<div class="empty">プレビューなし</div>{% endif %}</div>
+  <div>
+    <span class="no" style="color:var(--accent)">{{ d.drawing_no|default:"（図番不明）" }}{% if d.revision %} ・ Rev.{{ d.revision }}{% endif %} ・ {{ d.file.kind|upper }}</span>
+    <h1>{{ d.title|default:d.file.filename }}</h1>
+    <dl class="kv">
+      <dt>材質</dt><dd>{{ d.material|default:"—" }}</dd>
+      <dt>尺度</dt><dd>{{ d.scale|default:"—" }}</dd>
+      <dt>作成日</dt><dd>{{ d.drawn_date|default:"—" }}</dd>
+      <dt>所在</dt><dd>{{ d.file.path }}</dd>
+      <dt>更新</dt><dd>{{ d.file.mtime|date:"Y-m-d H:i" }}</dd>
+    </dl>
+    <p style="font-size:12px;margin:8px 0 0"><span class="pill {% if d.source == 'ocr' or d.source == 'filename' %}w{% else %}ok{% endif %}">{{ d.get_source_display }}</span> 表題欄の読み取り元{% if d.needs_ocr %} ・ <span class="pill w">OCR待ち</span>{% endif %}</p>
+    <div class="acts">
+      <a class="btn pri" href="{% url 'download' d.pk %}">原本をダウンロード</a>
+      {% if bom %}<a class="btn" href="{% url 'bom_xlsx' d.pk %}">部品表をExcel出力</a>{% endif %}
+    </div>
+  </div>
+</div>
+<h2>部品表 <span class="muted" style="font-weight:400">{{ bom|length }} 行</span></h2>
+{% if bom %}
+<div class="tw"><table>
+  <thead><tr><th>No.</th><th>品番</th><th>品名</th><th class="num">数量</th><th>材質</th><th>図番</th><th class="num">信頼度</th></tr></thead>
+  <tbody>{% for b in bom %}<tr class="{% if b.confidence < 0.8 %}low{% endif %}"><td>{{ b.item_no|default:b.row }}</td><td class="no">{{ b.part_no }}</td><td>{{ b.name }}</td><td class="num">{{ b.qty|default_if_none:"—"|floatformat:"-2" }}</td><td>{{ b.material }}</td><td class="no">{% if b.ref_drawing_no %}<a href="{% url 'index' %}?q={{ b.ref_drawing_no|urlencode }}">{{ b.ref_drawing_no }}</a>{% else %}—{% endif %}</td><td class="num">{{ b.confidence|floatformat:2 }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="muted">部品表は読み取れていません（部品表の抽出は Phase 2 で追加します）。</p>{% endif %}
+{% if revisions %}
+<h2>同じ図番の改訂</h2>
+<ul>{% for r in revisions %}<li><a href="{% url 'detail' r.pk %}">{{ r.drawing_no }} Rev.{{ r.revision|default:"-" }}</a> <span class="muted">{{ r.file.path }}</span></li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

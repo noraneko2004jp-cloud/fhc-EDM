@@ -1,0 +1,34 @@
+{% extends "drawings/base.html" %}{% block content %}
+<form class="search" method="get">
+  <input id="q" name="q" value="{{ q }}" type="search" placeholder="図番・品名・部品番号・材質・フォルダ名で検索" aria-label="検索語">
+  <select id="kind" name="kind" aria-label="種類"><option value="">すべて</option>
+    <option value="dxf" {% if kind == "dxf" %}selected{% endif %}>DXF</option>
+    <option value="pdf" {% if kind == "pdf" %}selected{% endif %}>PDF</option></select>
+  <button type="submit">検索</button>
+</form>
+<div class="expand">
+  {% if terms|length > 1 %}辞書で展開：{% for t in terms %}<span class="chip {% if not forloop.first %}syn{% endif %}">{{ t }}</span>{% endfor %}{% endif %}
+  <span style="margin-left:auto">{{ total }} 件</span>
+</div>
+{% if page.object_list %}
+<div class="grid">
+{% for d in page %}
+  <a class="card" href="{% url 'detail' d.pk %}{% if q %}?q={{ q|urlencode }}{% endif %}">
+    <div class="th">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のサムネイル" loading="lazy">{% else %}<span class="muted">プレビューなし</span>{% endif %}</div>
+    <div class="meta">
+      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}</span></span>
+      <span class="ellip" style="font-size:13px">{{ d.title|default:d.file.filename }}</span>
+      <span class="ellip muted" style="font-size:11.5px">{{ d.file.path }}</span>
+    </div>
+  </a>
+{% endfor %}
+</div>
+<nav class="pager">
+  {% if page.has_previous %}<a href="?q={{ q|urlencode }}&kind={{ kind }}&page={{ page.previous_page_number }}">← 前へ</a>{% endif %}
+  <span class="muted">{{ page.number }} / {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a href="?q={{ q|urlencode }}&kind={{ kind }}&page={{ page.next_page_number }}">次へ →</a>{% endif %}
+</nav>
+{% else %}
+<div class="empty">{% if q %}「{{ q }}」に一致する図面はありません。別の語や、図番の一部で試してください。{% else %}まだ解析済みの図面がありません。Mac mini の解析ワーカーが動くと、ここに図面が並びます。{% endif %}</div>
+{% endif %}
+{% endblock %}

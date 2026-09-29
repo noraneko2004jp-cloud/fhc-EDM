@@ -1,0 +1,9 @@
+{% extends "drawings/base.html" %}{% block content %}
+<form method="post" class="login">{% csrf_token %}
+  <b style="font-size:18px">DWG-FIND ログイン</b>
+  {% if form.errors %}<p style="color:var(--red);margin:0">ユーザー名またはパスワードが違います。</p>{% endif %}
+  <label>ユーザー名<input id="id_username" name="username" autofocus required></label>
+  <label>パスワード<input id="id_password" name="password" type="password" required></label>
+  <input type="hidden" name="next" value="{{ next }}">
+  <button class="btn pri" type="submit">ログイン</button>
+</form>{% endblock %}

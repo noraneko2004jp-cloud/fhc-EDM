@@ -1,0 +1,52 @@
+"""ワーカー設定。worker/.env（なければ環境変数）から読む。"""
+from __future__ import annotations
+
+import os
+import re
+import socket
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def load_env(path: Path):
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if v[:1] in ("'", '"') and v[:1] in v[1:]:
+            v = v[1:v.index(v[0], 1)]
+        else:
+            v = "" if v.startswith("#") else re.split(r"\s+#", v, maxsplit=1)[0].strip()  # 行末の「 # コメント」を除く
+        os.environ.setdefault(k.strip(), v)
+
+
+load_env(Path(os.environ.get("DWGFIND_ENV", Path(__file__).resolve().parent.parent / ".env")))
+
+
+def _list(key, default):
+    return [x.strip() for x in os.environ.get(key, default).split(",") if x.strip()]
+
+
+@dataclass
+class Config:
+    server_url: str = os.environ.get("SERVER_URL", "http://128.131.250.252:8000").rstrip("/")
+    token: str = os.environ.get("WORKER_TOKEN", "")
+    source_root: str = os.environ.get("SOURCE_ROOT", "")
+    smb_user: str = os.environ.get("SMB_USER", "")
+    smb_password: str = os.environ.get("SMB_PASSWORD", "")
+    worker_name: str = os.environ.get("WORKER_NAME", socket.gethostname())
+    concurrency: int = int(os.environ.get("WORKER_CONCURRENCY", "6"))
+    scan_interval_min: int = int(os.environ.get("SCAN_INTERVAL_MIN", "60"))
+    # 巡回から外すフォルダ（部分一致、カンマ区切り）
+    exclude: list = field(default_factory=lambda: _list("SCAN_EXCLUDE", "~$,/.Trash,/#recycle,/$RECYCLE.BIN"))
+    # 図番の形（社内規則に合わせて .env で上書きする）
+    drawing_no_regex: str = os.environ.get("DRAWING_NO_REGEX", r"[A-Z]{1,4}-?\d{3,6}(?:-\d{1,3})?[A-Z]?")
+    dxf_fallback_font: str = os.environ.get("DXF_FALLBACK_FONT", "")
+    thumb_width: int = int(os.environ.get("THUMB_WIDTH", "1200"))
+
+
+CONFIG = Config()
