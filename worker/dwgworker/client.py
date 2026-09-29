@@ -10,6 +10,9 @@ from .config import CONFIG
 
 class Api:
     def __init__(self, cfg=CONFIG):
+        if not cfg.token or not cfg.token.isascii() or " " in cfg.token:
+            raise SystemExit("worker/.env の WORKER_TOKEN が未設定か、仮の文字のままです。"
+                             "Ubuntu の ~/dwg-find/.env と同じ値を書いてください")
         self.base = cfg.server_url + "/api/internal"
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {cfg.token}"

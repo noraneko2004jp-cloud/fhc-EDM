@@ -47,11 +47,16 @@ PY="$(brew --prefix python@3.12)/bin/python3.12"
 [ -d "$REPO/worker/.venv" ] || "$PY" -m venv "$REPO/worker/.venv"
 "$REPO/worker/.venv/bin/pip" install -q --upgrade pip
 "$REPO/worker/.venv/bin/pip" install -q -r "$REPO/worker/requirements.txt"
-(cd "$REPO/worker" && .venv/bin/python -m unittest discover -s tests -t . 2>&1 | tail -1)
+if ! (cd "$REPO/worker" && .venv/bin/python -m unittest discover -s tests -t . >/tmp/dwgfind-test.log 2>&1); then
+  grep -v "point size" /tmp/dwgfind-test.log | tail -30
+  echo "自動テストが失敗しました。上の内容を確認してください（全文: /tmp/dwgfind-test.log）"; exit 1
+fi
+echo "自動テスト OK"
 
 if [ "${1:-}" = "--worker" ]; then
   say "解析ワーカーを常駐"
   [ -f "$REPO/worker/.env" ] || { echo "worker/.env がありません（worker/.env.example をコピーして編集）"; exit 1; }
+  sudo launchctl bootout system/com.dwgfind.worker 2>/dev/null || true
   (cd "$REPO/worker" && .venv/bin/python -m dwgworker check)
   install_plist "$REPO/macmini/launchd/com.dwgfind.worker.plist" com.dwgfind.worker
   echo "ログ: tail -f ~/Library/Logs/dwgfind-worker.log"

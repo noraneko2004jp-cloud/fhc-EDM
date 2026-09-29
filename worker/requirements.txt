@@ -1,4 +1,5 @@
 ezdxf>=1.4
 pymupdf>=1.24
+Pillow>=10     # ezdxf の図面描画に必要
 smbprotocol>=1.14
 requests>=2.32

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import logging
 
 import ezdxf
 from ezdxf import recover
@@ -9,6 +10,7 @@ from ezdxf import recover
 from . import titleblock
 from .config import CONFIG
 
+log = logging.getLogger("dwgworker")
 TEXT_TYPES = {"TEXT", "MTEXT", "ATTRIB"}
 
 # 図面指定のフォント（MSゴシック、SHX など）が無いときの代わりの日本語フォント。先に見つかったものを使う
@@ -89,16 +91,18 @@ def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
     if source == "attrib" and conf < 0.9:
         source = "text"
     text = "\n".join(i["text"] for i in items)
-    thumb = None
+    thumb, thumb_error = None, ""
     try:
         target = paper[0] if paper and len(msp) == 0 else msp
         thumb = _render_png(doc, target)
-    except Exception:
-        thumb = None
+    except Exception as e:  # サムネイルが作れなくても文字の読み取り結果は登録する
+        thumb_error = f"{type(e).__name__}: {e}"[:300]
+        log.warning("サムネイル作成に失敗 %s: %s", path, thumb_error)
     result = {
         "drawing": {**fields, "source": source, "confidence": conf, "needs_ocr": False,
                     "attributes": {"dxf_version": doc.dxfversion, "codepage": doc.header.get("$DWGCODEPAGE", ""),
-                                   "audit_errors": len(auditor.errors), "attribs": attribs[:200]}},
+                                   "audit_errors": len(auditor.errors), "attribs": attribs[:200],
+                                   **({"thumb_error": thumb_error} if thumb_error else {})}},
         "pages": [{"page_no": 1, "text": text, "text_source": "attrib" if attribs else "text"}],
         "bom": [],  # 部品表の抽出は Phase 2（サンプル図面の形式を見て実装）
         "items": items,
