@@ -31,6 +31,24 @@ class TitleBlockTests(unittest.TestCase):
         self.assertEqual((f["drawing_no"], f["revision"], src, conf), ("UH-4200", "B", "filename", 0.6))
 
 
+class IncludeTests(unittest.TestCase):
+    def test_include_top_folders_only(self):
+        from dwgworker import source
+        from dwgworker.config import CONFIG
+        with tempfile.TemporaryDirectory() as d:
+            for rel in ["図面 DXF・DWG・JW・PDF/a/UH-1.dxf", "図面原紙･資料 PDF/UH-1.pdf", "Ricohｽｷｬﾅｰ/s.pdf", "top.pdf"]:
+                p = Path(d) / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"x")
+            old = CONFIG.include
+            try:
+                CONFIG.include = ["図面 DXF・DWG・JW・PDF", "図面原紙・資料 PDF"]  # 全角の「・」でも半角「･」のフォルダに一致
+                got = sorted(r for r, _, _ in source.walk(d))
+            finally:
+                CONFIG.include = old
+            self.assertEqual(got, ["図面 DXF・DWG・JW・PDF/a/UH-1.dxf", "図面原紙･資料 PDF/UH-1.pdf"])
+
+
 class SampleParseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

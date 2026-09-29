@@ -41,6 +41,8 @@ class Config:
     worker_name: str = os.environ.get("WORKER_NAME", socket.gethostname())
     concurrency: int = int(os.environ.get("WORKER_CONCURRENCY", "6"))
     scan_interval_min: int = int(os.environ.get("SCAN_INTERVAL_MIN", "60"))
+    # 巡回するフォルダ（共有の直下の名前、カンマ区切り。空なら全部）。全角半角の違いは無視して比べる
+    include: list = field(default_factory=lambda: _list("SCAN_INCLUDE", ""))
     # 巡回から外すフォルダ（部分一致、カンマ区切り）
     exclude: list = field(default_factory=lambda: _list("SCAN_EXCLUDE", "~$,/.Trash,/#recycle,/$RECYCLE.BIN"))
     # 図番の形（社内規則に合わせて .env で上書きする）
