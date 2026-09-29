@@ -1,6 +1,7 @@
 """図面の置き場所を巡回・読み取りする。smb:// ならファイルサーバー（読み取り専用）、それ以外はローカルフォルダ。"""
 from __future__ import annotations
 
+import logging
 import os
 import stat
 import unicodedata
@@ -9,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from .config import CONFIG
 
 EXTS = {".dxf", ".pdf"}
+log = logging.getLogger("dwgworker")
 
 
 def _is_smb(root):
@@ -58,7 +60,12 @@ def walk(root=None):
         stack = [""]
         while stack:
             rel_dir = stack.pop()
-            for e in smb.scandir(_unc(root, rel_dir)):
+            try:
+                entries = list(smb.scandir(_unc(root, rel_dir)))
+            except Exception as ex:  # 開けないフォルダ（権限・壊れた名前など）は飛ばして巡回を続ける
+                log.warning("フォルダを読めないため飛ばします: %s（%s）", rel_dir or "/", type(ex).__name__)
+                continue
+            for e in entries:
                 rel = f"{rel_dir}/{e.name}" if rel_dir else e.name
                 if _excluded(rel):
                     continue
@@ -66,7 +73,11 @@ def walk(root=None):
                     if rel_dir or _top_ok(e.name):
                         stack.append(rel)
                 elif PurePosixPath(e.name).suffix.lower() in EXTS:
-                    st = e.stat()
+                    try:
+                        st = e.stat()
+                    except Exception as ex:
+                        log.warning("ファイル情報を読めないため飛ばします: %s（%s）", rel, type(ex).__name__)
+                        continue
                     yield rel, st.st_size, st.st_mtime
     else:
         base = Path(root)

@@ -29,12 +29,16 @@ def do_scan(api: Api):
     started = time.time()
     buf, total, complete = [], {"created": 0, "changed": 0, "unchanged": 0, "skipped": 0}, False
     try:
+        seen = 0
         for rel, size, mtime in source.walk():
             buf.append({"path": rel, "size": size, "mtime": mtime})
+            seen += 1
             if len(buf) >= BATCH:
                 for k, v in api.scan(buf).items():
                     total[k] += v
                 buf = []
+                if seen % 2000 == 0:
+                    log.info("巡回中：%d 件（新規 %d・変更 %d）%s", seen, total["created"], total["changed"], rel.rsplit("/", 1)[0])
         if buf:
             for k, v in api.scan(buf).items():
                 total[k] += v
@@ -150,8 +154,9 @@ def main(argv=None):
         while True:  # run
             try:
                 if time.time() >= next_scan:
-                    do_scan(api)
+                    # 巡回が途中で失敗しても、次の巡回は間隔をあけてから。その間にたまった解析を進める
                     next_scan = time.time() + CONFIG.scan_interval_min * 60
+                    do_scan(api)
                 if do_work(api, pool, deadline=next_scan) == 0:
                     time.sleep(15)
             except Exception as e:  # サーバーやファイルサーバーが一時的に落ちても止まらない
