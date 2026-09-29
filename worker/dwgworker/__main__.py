@@ -125,6 +125,7 @@ def main(argv=None):
         return 0
 
     if a.cmd == "probe":
+        logging.getLogger().setLevel(logging.ERROR)  # 接続途中の細かい記録を出さない（入力欄が隠れないように）
         return probe(a.file or CONFIG.source_root, seconds=a.minutes * 60)
 
     api = Api()
