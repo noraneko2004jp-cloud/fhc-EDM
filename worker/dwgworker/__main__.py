@@ -14,6 +14,7 @@ import json
 import logging
 import sys
 import time
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
 from . import source
@@ -150,13 +151,24 @@ def main(argv=None):
         if a.cmd == "work":
             do_work(api, pool, once=True)
             return 0
-        next_scan = 0.0
+        # 前回の巡回が終わった時刻を覚えておき、再起動のたびに最初から巡回し直さない
+        stamp = Path.home() / ".dwgfind-last-scan"
+        try:
+            next_scan = float(stamp.read_text()) + CONFIG.scan_interval_min * 60
+        except (OSError, ValueError):
+            next_scan = 0.0
+        if next_scan > time.time():
+            log.info("前回の巡回から %d 分以内のため、解析の続きから始めます", CONFIG.scan_interval_min)
         while True:  # run
             try:
                 if time.time() >= next_scan:
                     # 巡回が途中で失敗しても、次の巡回は間隔をあけてから。その間にたまった解析を進める
                     next_scan = time.time() + CONFIG.scan_interval_min * 60
                     do_scan(api)
+                    try:
+                        stamp.write_text(str(time.time()))
+                    except OSError:
+                        pass
                 if do_work(api, pool, deadline=next_scan) == 0:
                     time.sleep(15)
             except Exception as e:  # サーバーやファイルサーバーが一時的に落ちても止まらない
