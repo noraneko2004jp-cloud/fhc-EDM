@@ -4,7 +4,8 @@
   python -m dwgworker work --once  たまっているジョブを処理して終わる
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
   python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用）
-  python -m dwgworker probe [smb://サーバー/共有]  ファイルサーバーに接続し、直下のフォルダと件数を表示（読み取りのみ）
+  python -m dwgworker probe [smb://サーバー/共有] [--minutes 10]
+                                   ファイルサーバーに接続し、直下のフォルダごとの件数を表示（読み取りのみ）
 """
 from __future__ import annotations
 
@@ -64,8 +65,9 @@ def do_work(api: Api, pool: ProcessPoolExecutor, once=False, deadline=None):
 
 
 def probe(root, seconds=120):
-    """マウントせずに SMB で直接つなぎ、直下のフォルダ一覧と DXF/PDF の件数を数える。"""
+    """マウントせずに SMB で直接つなぎ、直下のフォルダごとに図面らしいファイルの件数を数える（読み取りのみ）。"""
     import getpass
+    from collections import Counter
     from pathlib import PurePosixPath
 
     if not root.startswith("smb://"):
@@ -75,20 +77,29 @@ def probe(root, seconds=120):
     CONFIG.smb_user, CONFIG.smb_password, CONFIG.source_root = user, pw, root
     smb = source._smb_login(root)
     top = source._unc(root)
-    print("== 直下のフォルダ ==")
-    for e in sorted(smb.scandir(top), key=lambda e: e.name):
-        if e.is_dir():
-            print("  " + e.name)
-    t, n, stack = time.time(), {"dxf": 0, "pdf": 0}, [top]
-    while stack and time.time() - t < seconds:
-        for e in smb.scandir(stack.pop()):
-            if e.is_dir():
-                stack.append(e.path)
-            else:
-                ext = PurePosixPath(e.name).suffix.lower()[1:]
-                if ext in n:
-                    n[ext] += 1
-    print(f"== {time.time() - t:.0f}秒で数えた件数 == DXF {n['dxf']} / PDF {n['pdf']}", "（途中で打ち切り）" if stack else "（全件）")
+    exts = ("dxf", "dwg", "jww", "jwc", "pdf", "tif", "tiff")
+    folders = sorted((e for e in smb.scandir(top) if e.is_dir()), key=lambda e: e.name)
+    t0 = time.time()
+    total = Counter()
+    budget = seconds / max(len(folders), 1)
+    print(f"直下のフォルダ {len(folders)} 個を、1フォルダあたり最大 {budget:.0f} 秒ずつ数えます")
+    for f in folders:
+        t, n, stack, size = time.time(), Counter(), [f.path], 0
+        while stack and time.time() - t < budget:
+            for e in smb.scandir(stack.pop()):
+                if e.is_dir():
+                    stack.append(e.path)
+                else:
+                    ext = PurePosixPath(e.name).suffix.lower()[1:]
+                    if ext in exts:
+                        n[ext] += 1
+                        size += e.stat().st_size
+                    else:
+                        n["その他"] += 1
+        total.update(n)
+        detail = "  ".join(f"{k.upper() if k != 'その他' else k} {v}" for k, v in n.most_common())
+        print(f"・{f.name}：{detail or '（なし）'}  計 {size / 1e9:.1f}GB{'（途中まで）' if stack else ''}")
+    print(f"== 合計（{time.time() - t0:.0f}秒）==", "  ".join(f"{k.upper() if k != 'その他' else k} {v}" for k, v in total.most_common()))
     return 0
 
 
@@ -97,6 +108,7 @@ def main(argv=None):
     ap.add_argument("cmd", choices=["check", "scan", "work", "run", "parse", "probe"])
     ap.add_argument("file", nargs="?")
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--minutes", type=float, default=2, help="probe で数える時間（分）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -113,7 +125,7 @@ def main(argv=None):
         return 0
 
     if a.cmd == "probe":
-        return probe(a.file or CONFIG.source_root)
+        return probe(a.file or CONFIG.source_root, seconds=a.minutes * 60)
 
     api = Api()
     if a.cmd == "check":
