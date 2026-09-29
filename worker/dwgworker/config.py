@@ -46,8 +46,12 @@ class Config:
     # 巡回から外すフォルダ（部分一致、カンマ区切り）
     exclude: list = field(default_factory=lambda: _list("SCAN_EXCLUDE", "~$,/.Trash,/#recycle,/$RECYCLE.BIN"))
     # 図番の形（社内規則に合わせて .env で上書きする）
-    drawing_no_regex: str = os.environ.get("DRAWING_NO_REGEX", r"[A-Z]{1,4}-?\d{3,6}(?:-\d{1,3})?[A-Z]?")
+    drawing_no_regex: str = os.environ.get("DRAWING_NO_REGEX", r"[A-Z]{1,4}-?\d{3,8}(?:X{2,6})?(?:-\d{1,3})?[A-Z]?|(?<!\d)\d{10}(?!\d)")
     dxf_fallback_font: str = os.environ.get("DXF_FALLBACK_FONT", "")
+    # スキャン PDF の OCR（macOS Vision）。1 ファイルで OCR する最大ページ数
+    ocr_enabled: bool = os.environ.get("OCR_ENABLED", "1") not in ("0", "false", "no")
+    ocr_max_pages: int = int(os.environ.get("OCR_MAX_PAGES", "30"))
+    ocr_dpi: int = int(os.environ.get("OCR_DPI", "300"))
     thumb_width: int = int(os.environ.get("THUMB_WIDTH", "1200"))
 
 

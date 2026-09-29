@@ -31,6 +31,42 @@ class TitleBlockTests(unittest.TestCase):
         self.assertEqual((f["drawing_no"], f["revision"], src, conf), ("UH-4200", "B", "filename", 0.6))
 
 
+class RealConventionTests(unittest.TestCase):
+    """2026-09-29 に確認した実際のファイル名・表題欄の書き方"""
+
+    def test_part_filename(self):
+        f, rule = titleblock.from_filename("図面原紙･資料 PDF/HB0011XXXX差替3 スペーサー.pdf")
+        self.assertTrue(rule)
+        self.assertEqual((f["drawing_no"], f["revision"], f["title"]), ("HB0011XXXX", "3", "スペーサー"))
+        f, _ = titleblock.from_filename("HB0300XXXX  額縁／間仕切ﾄﾞｱ.pdf")
+        self.assertEqual(f["title"], "額縁/間仕切ドア")
+
+    def test_job_and_dated_filenames(self):
+        f, _ = titleblock.from_filename("20-032 CAK-A 多用途ﾊｳｽ 図面一式.pdf")
+        self.assertEqual((f["job_no"], f["model"]), ("20-032", "CAK-A"))
+        f, _ = titleblock.from_filename("dxfCAK-40A 田の字36R-221003.dxf")
+        self.assertEqual((f["model"], f["title"], f["revision"]), ("CAK-40A", "田の字36R", "2022-10-03"))
+
+    def test_codes_from_spaced_ocr(self):
+        self.assertEqual(titleblock.find_codes("H B 0 0 1 1 X X X X と HUCP240054"), ["HB0011XXXX", "HUCP240054"])
+
+    def test_english_title_block_value_below_right(self):
+        items = [{"text": "TIPE", "x": 0, "y": 10, "h": 2}, {"text": "CAK-40A", "x": 13, "y": 5, "h": 3},
+                 {"text": "DRAWING NO", "x": 50, "y": 0, "h": 2}, {"text": "2", "x": 62, "y": -5, "h": 3}]
+        p = titleblock.from_positioned(items)
+        self.assertEqual((p.get("model"), p.get("sheet_no"), p.get("drawing_no")), ("CAK-40A", "2", None))
+
+    def test_shift_jis_dxf_without_codepage(self):
+        body = ("  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1009\n  0\nENDSEC\n"
+                "  0\nSECTION\n  2\nENTITIES\n" + "".join(
+                    f"  0\nTEXT\n  8\n0\n 10\n0\n 20\n{i}\n 30\n0\n 40\n1\n  1\n喫煙ハウス 平・立面図{i}\n" for i in range(15))
+                + "  0\nENDSEC\n  0\nEOF\n").encode("cp932")
+        fixed, changed = parse_dxf.fix_japanese_codepage(body)
+        self.assertTrue(changed)
+        r, _ = parse_dxf.parse(body, "dxfCAK-40A 喫煙-220323.dxf")
+        self.assertIn("喫煙ハウス", r["pages"][0]["text"])
+
+
 class IncludeTests(unittest.TestCase):
     def test_include_top_folders_only(self):
         from dwgworker import source

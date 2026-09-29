@@ -207,8 +207,10 @@ def result(request, job_id):
                 for chunk in thumb.chunks():
                     out.write(chunk)
             drawing.thumbnail = rel
+        attrs = drawing.attributes or {}
         drawing.search_text = build_search_text(
             drawing.drawing_no, drawing.revision, drawing.title, drawing.material, f.path,
+            *[attrs.get(k, "") for k in ("model", "job_no", "sheet_title", "file_title")],
             *[" ".join([b.part_no, b.name, b.material, b.ref_drawing_no]) for b in drawing.bom_items.all()],
             *[(p.get("text") or "")[:4000] for p in pages],
         )

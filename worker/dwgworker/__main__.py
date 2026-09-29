@@ -3,7 +3,7 @@
   python -m dwgworker scan         1回だけ巡回して、新規・変更ファイルをサーバーに登録
   python -m dwgworker work --once  たまっているジョブを処理して終わる
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
-  python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用）
+  python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用。スキャンPDFはOCRも行う）
   python -m dwgworker probe [smb://サーバー/共有] [--minutes 10]
                                    ファイルサーバーに接続し、直下のフォルダごとの件数を表示（読み取りのみ）
 """
@@ -119,7 +119,7 @@ def main(argv=None):
         res, thumb = (parse_dxf if p.suffix.lower() == ".dxf" else parse_pdf).parse(p.read_bytes(), p.name)
         res.pop("items", None)
         for pg in res["pages"]:
-            pg["text"] = pg["text"][:300]
+            pg["text"] = pg["text"][:1500 if pg["page_no"] == 1 else 200]
         print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
         print(f"サムネイル: {len(thumb) if thumb else 0} bytes")
         return 0

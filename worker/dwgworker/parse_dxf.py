@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 import logging
 
 import ezdxf
@@ -78,7 +79,38 @@ def _render_png(doc, layout_obj) -> bytes:
     return backend.get_pixmap_bytes(page, fmt="png", settings=layout.Settings(fit_page=True), dpi=dpi)
 
 
+_CP_RE = re.compile(rb"(\s*9\r?\n\$DWGCODEPAGE\r?\n\s*3\r?\n)([^\r\n]*)")
+_VER_RE = re.compile(rb"(\s*9\r?\n\$ACADVER\r?\n\s*1\r?\n[^\r\n]*\r?\n)")
+
+
+def fix_japanese_codepage(data: bytes) -> tuple[bytes, bool]:
+    """文字コードの指定がない（または ANSI_1252 の）古い DXF に Shift_JIS の日本語が入っていれば ANSI_932 として読ませる。
+
+    Jw_cad などが出力した R12 形式の DXF でよく起きる。指定どおり読むと日本語が文字化けし、
+    画層名の不正で読み込み自体が失敗することもある。
+    """
+    m = _CP_RE.search(data[:20000])
+    current = m.group(2).strip().upper() if m else b""
+    if current and current not in (b"ANSI_1252", b"DWGCODEPAGE"):
+        return data, False
+    high = sum(1 for b in data if b >= 0x80)
+    if high < 20:
+        return data, False
+    text = data.decode("cp932", errors="replace")
+    if text.count("\ufffd") > high * 0.01:  # Shift_JIS として読めないなら触らない
+        return data, False
+    if m:
+        return data[:m.start(2)] + b"ANSI_932" + data[m.end(2):], True
+    v = _VER_RE.search(data[:20000])
+    if not v:
+        return data, False
+    nl = b"\r\n" if b"\r\n" in v.group(1) else b"\n"
+    ins = b"  9" + nl + b"$DWGCODEPAGE" + nl + b"  3" + nl + b"ANSI_932" + nl
+    return data[:v.end()] + ins + data[v.end():], True
+
+
 def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
+    data, cp_fixed = fix_japanese_codepage(data)
     doc, auditor = recover.read(io.BytesIO(data))
     msp = doc.modelspace()
     items, attribs = [], []
@@ -99,9 +131,11 @@ def parse(data: bytes, path: str) -> tuple[dict, bytes | None]:
         thumb_error = f"{type(e).__name__}: {e}"[:300]
         log.warning("サムネイル作成に失敗 %s: %s", path, thumb_error)
     result = {
-        "drawing": {**fields, "source": source, "confidence": conf, "needs_ocr": False,
+        "drawing": {**{k: fields[k] for k in ("drawing_no", "revision", "title", "material", "scale", "drawn_date")},
+                    "source": source, "confidence": conf, "needs_ocr": False,
                     "attributes": {"dxf_version": doc.dxfversion, "codepage": doc.header.get("$DWGCODEPAGE", ""),
-                                   "audit_errors": len(auditor.errors), "attribs": attribs[:200],
+                                   "audit_errors": len(auditor.errors), "codepage_fixed": cp_fixed, "attribs": attribs[:200],
+                                   **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]},
                                    **({"thumb_error": thumb_error} if thumb_error else {})}},
         "pages": [{"page_no": 1, "text": text, "text_source": "attrib" if attribs else "text"}],
         "bom": [],  # 部品表の抽出は Phase 2（サンプル図面の形式を見て実装）

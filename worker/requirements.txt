@@ -3,3 +3,4 @@ pymupdf>=1.24
 Pillow>=10     # ezdxf の図面描画に必要
 smbprotocol>=1.14
 requests>=2.32
+pyobjc-framework-Vision>=10; sys_platform == "darwin"   # スキャン PDF の OCR（macOS Vision）

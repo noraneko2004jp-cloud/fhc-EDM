@@ -6,13 +6,17 @@
     <span class="no" style="color:var(--accent)">{{ d.drawing_no|default:"（図番不明）" }}{% if d.revision %} ・ Rev.{{ d.revision }}{% endif %} ・ {{ d.file.kind|upper }}</span>
     <h1>{{ d.title|default:d.file.filename }}</h1>
     <dl class="kv">
+      {% if d.attributes.model %}<dt>型式</dt><dd>{{ d.attributes.model }}</dd>{% endif %}
+      {% if d.attributes.job_no %}<dt>案件番号</dt><dd>{{ d.attributes.job_no }}</dd>{% endif %}
+      {% if d.attributes.sheet_title %}<dt>図名</dt><dd>{{ d.attributes.sheet_title }}{% if d.attributes.sheet_no %}（{{ d.attributes.sheet_no }}）{% endif %}</dd>{% endif %}
+      {% if d.revision %}<dt>改訂・差替</dt><dd>{{ d.revision }}</dd>{% endif %}
       <dt>材質</dt><dd>{{ d.material|default:"—" }}</dd>
       <dt>尺度</dt><dd>{{ d.scale|default:"—" }}</dd>
       <dt>作成日</dt><dd>{{ d.drawn_date|default:"—" }}</dd>
       <dt>所在</dt><dd>{{ d.file.path }}</dd>
       <dt>更新</dt><dd>{{ d.file.mtime|date:"Y-m-d H:i" }}</dd>
     </dl>
-    <p style="font-size:12px;margin:8px 0 0"><span class="pill {% if d.source == 'ocr' or d.source == 'filename' %}w{% else %}ok{% endif %}">{{ d.get_source_display }}</span> 表題欄の読み取り元{% if d.needs_ocr %} ・ <span class="pill w">OCR待ち</span>{% endif %}</p>
+    <p style="font-size:12px;margin:8px 0 0"><span class="pill {% if d.source == 'ocr' or d.source == 'filename' %}w{% else %}ok{% endif %}">{{ d.get_source_display }}</span> 表題欄の読み取り元{% if d.needs_ocr %} ・ <span class="pill w">OCR待ち</span>{% endif %}{% if d.attributes.pages > 1 %} ・ {{ d.attributes.pages }} ページ{% endif %}</p>
     <div class="acts">
       <a class="btn pri" href="{% url 'download' d.pk %}">原本をダウンロード</a>
       {% if bom %}<a class="btn" href="{% url 'bom_xlsx' d.pk %}">部品表をExcel出力</a>{% endif %}
