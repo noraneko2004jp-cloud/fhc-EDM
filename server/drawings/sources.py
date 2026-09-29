@@ -23,7 +23,7 @@ def open_source(rel: str):
 
         host_share = root[len("smb://"):].strip("/")
         server = host_share.split("/", 1)[0]
-        smbclient.register_session(server, username=settings.SMB_USER, password=settings.SMB_PASSWORD)
+        smbclient.register_session(server, username=settings.SMB_USER.replace("/", "\\"), password=settings.SMB_PASSWORD)
         unc = "\\\\" + host_share.replace("/", "\\") + "\\" + str(relp).replace("/", "\\")
         return smbclient.open_file(unc, mode="rb", share_access="rw")
     return open(Path(root) / relp, "rb")

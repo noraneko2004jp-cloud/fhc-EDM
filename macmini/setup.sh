@@ -62,6 +62,16 @@ if [ "${1:-}" = "--worker" ]; then
   [ -f "$REPO/worker/.env" ] || { echo "worker/.env がありません（worker/.env.example をコピーして編集）"; exit 1; }
   (cd "$REPO/worker" && .venv/bin/python -m dwgworker check)
   install_plist "$REPO/macmini/launchd/com.dwgfind.worker.plist" com.dwgfind.worker
+  # 初回起動時は macOS の「ローカルネットワーク」許可が反映される前に通信して失敗することがある。
+  # 失敗を見つけたら 1 回だけ再起動する（2026-09-29 仮機で確認）
+  LOG="/Users/$USER_NAME/Library/Logs/dwgfind-worker.log"
+  sleep 20
+  if tail -20 "$LOG" 2>/dev/null | grep -q "No route to host"; then
+    echo "Ubuntu に届かなかったため再起動します。直らない場合は システム設定 > プライバシーとセキュリティ > ローカルネットワーク で python3.12 をオンにしてください"
+    sudo launchctl kickstart -k system/com.dwgfind.worker
+    sleep 20
+  fi
+  tail -3 "$LOG" 2>/dev/null || true
   echo "ログ: tail -f ~/Library/Logs/dwgfind-worker.log"
 fi
 say "完了"

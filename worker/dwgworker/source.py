@@ -23,7 +23,8 @@ def _smb_login(root):
     import smbclient
 
     server = root[len("smb://"):].split("/", 1)[0]
-    smbclient.register_session(server, username=CONFIG.smb_user, password=CONFIG.smb_password)
+    user = CONFIG.smb_user.replace("/", "\\")  # 「DOMAIN/名前」でも「DOMAIN\\名前」として扱う
+    smbclient.register_session(server, username=user, password=CONFIG.smb_password)
     return smbclient
 
 
