@@ -23,7 +23,12 @@ def open_source(rel: str):
 
         host_share = root[len("smb://"):].strip("/")
         server = host_share.split("/", 1)[0]
-        smbclient.register_session(server, username=settings.SMB_USER.replace("/", "\\"), password=settings.SMB_PASSWORD)
+        user = settings.SMB_USER.replace("/", "\\")
+        if user.lower() in ("guest", "anonymous"):  # 匿名（ゲスト）接続。署名なしで接続する
+            smbclient.register_session(server, username="guest", password=settings.SMB_PASSWORD or "",
+                                       auth_protocol="ntlm", require_signing=False)
+        else:
+            smbclient.register_session(server, username=user, password=settings.SMB_PASSWORD)
         unc = "\\\\" + host_share.replace("/", "\\") + "\\" + str(relp).replace("/", "\\")
         return smbclient.open_file(unc, mode="rb", share_access="rw")
     return open(Path(root) / relp, "rb")

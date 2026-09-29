@@ -25,7 +25,13 @@ def _smb_login(root):
 
     server = root[len("smb://"):].split("/", 1)[0]
     user = CONFIG.smb_user.replace("/", "\\")  # 「DOMAIN/名前」でも「DOMAIN\\名前」として扱う
-    smbclient.register_session(server, username=user, password=CONFIG.smb_password)
+    if user.lower() in ("guest", "anonymous", "ゲスト"):
+        # ファイルサーバーが匿名（ゲスト）接続を許可している場合。パスワードを保存しなくて済む。
+        # ゲスト接続では署名ができないため、署名の要求を外す
+        smbclient.register_session(server, username="guest", password=CONFIG.smb_password or "",
+                                   auth_protocol="ntlm", require_signing=False)
+    else:
+        smbclient.register_session(server, username=user, password=CONFIG.smb_password)
     return smbclient
 
 

@@ -72,8 +72,8 @@ def probe(root, seconds=120):
 
     if not root.startswith("smb://"):
         print("smb://サーバー/共有名 の形で指定してください"); return 1
-    user = CONFIG.smb_user or input("ファイルサーバーのユーザー名（ドメインがあれば DOMAIN\\名前）: ")
-    pw = CONFIG.smb_password or getpass.getpass("パスワード（表示されません）: ")
+    user = CONFIG.smb_user or input("ファイルサーバーのユーザー名（ドメインがあれば DOMAIN\\名前、匿名接続なら guest）: ")
+    pw = CONFIG.smb_password or ("" if user.lower() in ("guest", "anonymous") else getpass.getpass("パスワード（表示されません）: "))
     CONFIG.smb_user, CONFIG.smb_password, CONFIG.source_root = user, pw, root
     smb = source._smb_login(root)
     top = source._unc(root)
