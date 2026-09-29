@@ -9,8 +9,10 @@ from pathlib import Path
 
 
 def load_env(path: Path):
+    """.env を読む。同じ項目が複数行あるときは後の行を使う。すでに環境変数にある値は変えない。"""
     if not path.exists():
         return
+    values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -21,7 +23,9 @@ def load_env(path: Path):
             v = v[1:v.index(v[0], 1)]
         else:
             v = "" if v.startswith("#") else re.split(r"\s+#", v, maxsplit=1)[0].strip()  # 行末の「 # コメント」を除く
-        os.environ.setdefault(k.strip(), v)
+        values[k.strip()] = v
+    for k, v in values.items():
+        os.environ.setdefault(k, v)
 
 
 load_env(Path(os.environ.get("DWGFIND_ENV", Path(__file__).resolve().parent.parent / ".env")))

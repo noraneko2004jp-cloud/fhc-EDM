@@ -111,6 +111,9 @@ def main(argv=None):
     ap.add_argument("--minutes", type=float, default=2, help="probe で数える時間（分）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # SMB ライブラリはファイル 1 件ごとに INFO を出してログが膨らむため、警告以上だけにする
+    for name in ("smbprotocol", "smbclient", "spnego"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     if a.cmd == "parse":
         from pathlib import Path

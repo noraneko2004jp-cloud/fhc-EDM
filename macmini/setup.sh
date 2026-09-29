@@ -57,6 +57,13 @@ if ! (cd "$REPO/worker" && .venv/bin/python -m unittest discover -s tests -t . >
 fi
 echo "自動テスト OK"
 
+say "ログの世代管理（10MB ごとに切り替え、5 世代）"
+printf '%s\n' \
+  "# logfilename  [owner:group]  mode count size(KB) when flags" \
+  "/Users/$USER_NAME/Library/Logs/dwgfind-worker.log $USER_NAME:staff 644 5 10240 * NJ" \
+  "/Users/$USER_NAME/Library/Logs/dwgfind-ollama.log $USER_NAME:staff 644 5 10240 * NJ" \
+  | sudo tee /etc/newsyslog.d/dwgfind.conf >/dev/null
+
 if [ "${1:-}" = "--worker" ]; then
   say "解析ワーカーを常駐"
   [ -f "$REPO/worker/.env" ] || { echo "worker/.env がありません（worker/.env.example をコピーして編集）"; exit 1; }
