@@ -112,7 +112,13 @@ class SampleParseTests(unittest.TestCase):
         self.assertEqual(r["drawing"]["drawing_no"], "UH-3600A")
         self.assertFalse(r["drawing"]["needs_ocr"])
         r, _ = self.parse("scan/2024/UH-4200_B.pdf")
-        self.assertTrue(r["drawing"]["needs_ocr"])
+        from dwgworker import ocr_mac
+        if ocr_mac.available():  # Mac mini：画像だけの PDF を OCR して文字が取れる
+            self.assertEqual(r["drawing"]["attributes"]["ocr_pages"], 1)
+            self.assertFalse(r["drawing"]["needs_ocr"])
+            self.assertIn("UH-4200", r["pages"][0]["text"])
+        else:  # OCR できない環境では OCR 待ちになる
+            self.assertTrue(r["drawing"]["needs_ocr"])
 
 
 if __name__ == "__main__":
