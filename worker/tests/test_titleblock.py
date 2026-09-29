@@ -85,6 +85,18 @@ class DrawingSetTests(unittest.TestCase):
         self.assertEqual(sorted(thumbs), [1, 2, 3])
         self.assertIn("HUCP240054", ds[2]["pages"][0]["text"])
 
+    def test_document_without_title_blocks_is_not_split(self):
+        import pymupdf
+        doc = pymupdf.open()
+        for i in range(6):  # 6 ページ中、右下に図番らしきものがあるのは 2 ページだけ（申請図書など）
+            pg = doc.new_page(width=1190, height=842)
+            pg.insert_text((60, 100), "確認申請 添付図面 立面図 配置図 " * 3, fontname="japan", fontsize=10)
+            if i < 2:
+                pg.insert_text((1020, 815), f"AW{100 + i}", fontsize=12)
+        r, thumbs = parse_pdf.parse(doc.tobytes(), "物件対応ファイル他/確認申請添付図面 参考.pdf")
+        self.assertEqual(len(r["drawings"]), 1)
+        self.assertEqual(len(r["drawings"][0]["pages"]), 6)
+
 
 class IncludeTests(unittest.TestCase):
     def test_include_top_folders_only(self):

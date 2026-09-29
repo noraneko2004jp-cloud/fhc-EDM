@@ -101,7 +101,9 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
         source = "ocr"
 
     # 図面一式：2 ページ以上で表題欄に図番があれば、ページごとに別の図面にする
-    split = len(pages) > 1 and sum(1 for p in pages if p["tb_codes"]) >= 2
+    # （表題欄に図番がないページが大半の資料・申請図書などは、分けずに 1 件の資料として扱う）
+    with_codes = sum(1 for p in pages if p["tb_codes"])
+    split = len(pages) > 1 and with_codes >= 2 and with_codes >= len(pages) * 0.5
     drawings, thumbs = [], {}
     if split:
         for p in pages:
