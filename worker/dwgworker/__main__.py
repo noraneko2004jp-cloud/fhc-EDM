@@ -121,7 +121,6 @@ def main(argv=None):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     if a.cmd == "parse":
-        from pathlib import Path
         from . import parse_dxf, parse_pdf
         p = Path(a.file)
         res, thumbs = (parse_dxf if p.suffix.lower() == ".dxf" else parse_pdf).parse(p.read_bytes(), p.name)
