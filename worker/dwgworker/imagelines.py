@@ -68,7 +68,7 @@ def lone_ones(gray: np.ndarray, h_px: float) -> list[tuple[float, float, float]]
     H, W = dark.shape
     if H == 0 or W == 0:
         return []
-    rule_cols = dark.mean(axis=0) > 0.6
+    rule_cols = dark.mean(axis=0) > 0.85  # 欄を縦に貫く線だけ（「1」は欄の高さの 6〜7 割）
     rule_rows = dark.mean(axis=1) > 0.5
     ink = dark.copy()
     ink[:, rule_cols] = False
