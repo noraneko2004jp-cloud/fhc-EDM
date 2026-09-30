@@ -91,6 +91,18 @@ class WorkerApiTests(TestCase):
         self.client.post(f"/api/internal/jobs/{job['job_id']}/result", {"data": json.dumps(data)}, **AUTH)
         self.assertEqual(Drawing.objects.count(), 1)
 
+    def test_nul_characters_are_removed(self):
+        self.scan([{"path": "x/NUL.pdf", "size": 1, "mtime": time.time()}])
+        job = post_json(self.client, "/api/internal/jobs/claim", {"limit": 1}).json()["jobs"][0]
+        data = {"drawings": [{"page_no": 1, "drawing": {"drawing_no": "HB\u00000001", "title": "a\u0000b",
+                                                         "attributes": {"k\u0000": "v\u0000"}},
+                              "pages": [{"page_no": 1, "text": "注記\u0000本文"}], "bom": []}]}
+        r = self.client.post(f"/api/internal/jobs/{job['job_id']}/result", {"data": json.dumps(data)}, **AUTH)
+        self.assertEqual(r.status_code, 200, r.content)
+        d = Drawing.objects.get()
+        self.assertEqual((d.drawing_no, d.title), ("HB0001", "ab"))
+        self.assertEqual(d.pages.get().text, "注記本文")
+
     def test_fail_retries_then_gives_up(self):
         self.scan([{"path": "x/UH-2.pdf", "size": 1, "mtime": time.time()}])
         for i in range(3):

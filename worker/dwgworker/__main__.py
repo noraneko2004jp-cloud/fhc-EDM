@@ -59,8 +59,15 @@ def do_work(api: Api, pool: ProcessPoolExecutor, once=False, deadline=None):
             return done
         for out in pool.map(process, jobs):
             if out["ok"]:
-                api.result(out["job_id"], out["result"], out["thumbs"])
-                done += 1
+                try:
+                    api.result(out["job_id"], out["result"], out["thumbs"])
+                    done += 1
+                except RuntimeError as e:  # サーバーが 1 件の登録に失敗しても、他のジョブは続ける
+                    log.warning("ジョブ %s の登録に失敗: %s", out["job_id"], str(e)[:300])
+                    try:
+                        api.fail(out["job_id"], f"登録に失敗: {e}"[:4000])
+                    except Exception:
+                        pass
             else:
                 log.warning("ジョブ %s 失敗: %s", out["job_id"], out["error"].splitlines()[0])
                 api.fail(out["job_id"], out["error"], out["permanent"])

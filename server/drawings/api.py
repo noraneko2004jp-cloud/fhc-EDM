@@ -12,6 +12,7 @@ import datetime as dt
 import functools
 import hmac
 import json
+import logging
 from pathlib import Path
 
 from django.conf import settings
@@ -25,6 +26,7 @@ from django.views.decorators.http import require_GET, require_POST
 from .models import BomItem, Drawing, Job, Page, SourceFile
 from .text import build_search_text
 
+log = logging.getLogger("drawings")
 MAX_ATTEMPTS = 3
 STALE_AFTER = dt.timedelta(minutes=30)
 KINDS = {".dxf": SourceFile.Kind.DXF, ".pdf": SourceFile.Kind.PDF}
@@ -153,6 +155,20 @@ def _num(v):
     except ValueError:
         return None
 
+_CTRL = dict.fromkeys(c for c in range(32) if c not in (9, 10, 13))
+
+
+def _clean(v):
+    """PostgreSQL が受け付けない NUL などの制御文字を取り除く（PDF のテキスト層や OCR 結果に混じることがある）。"""
+    if isinstance(v, str):
+        return v.translate(_CTRL)
+    if isinstance(v, list):
+        return [_clean(x) for x in v]
+    if isinstance(v, dict):
+        return {_clean(k): _clean(x) for k, x in v.items()}
+    return v
+
+
 def _save_drawing(request, f, page_no, d, pages, bom):
     drawing, _ = Drawing.objects.update_or_create(file=f, page_no=page_no, defaults={
         "drawing_no": (d.get("drawing_no") or "")[:64],
@@ -209,10 +225,17 @@ def result(request, job_id):
     except Job.DoesNotExist:
         return JsonResponse({"error": "実行中のジョブが見つかりません"}, status=404)
     try:
-        data = json.loads(request.POST.get("data") or request.body)
+        data = _clean(json.loads(request.POST.get("data") or request.body))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return JsonResponse({"error": "data（JSON）が読めません"}, status=400)
+    try:
+        return _store_result(request, job, data)
+    except Exception as e:  # 原因をワーカーのログにも出す
+        log.exception("解析結果の登録に失敗 job=%s path=%s", job.id, job.file.path)
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"[:1000]}, status=500)
 
+
+def _store_result(request, job, data):
     # 新形式：{"drawings": [{"page_no", "drawing", "pages", "bom"}]}。旧形式（drawing/pages/bom を直接）も受け付ける
     entries = data.get("drawings")
     if entries is None:
