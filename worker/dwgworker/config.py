@@ -57,6 +57,8 @@ class Config:
     ocr_max_pages: int = int(os.environ.get("OCR_MAX_PAGES", "30"))
     ocr_dpi: int = int(os.environ.get("OCR_DPI", "300"))
     thumb_width: int = int(os.environ.get("THUMB_WIDTH", "1200"))
+    # 部品表の読み取り。DXF は常に行う。スキャン PDF（OCR）は精度を確かめてから BOM_PDF=1 で有効にする
+    bom_pdf: bool = os.environ.get("BOM_PDF", "0").strip() in ("1", "true", "yes")
 
 
 CONFIG = Config()

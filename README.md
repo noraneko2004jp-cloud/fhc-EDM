@@ -53,6 +53,8 @@ tail -f ~/Library/Logs/dwgfind-worker.log
 cd ~/dwg-find/worker
 .venv/bin/python -m dwgworker check           # 設定・サーバー・ファイルサーバーへの接続確認
 .venv/bin/python -m dwgworker parse 図面.dxf   # 1ファイルだけ解析して結果を表示（サーバー不要）
+.venv/bin/python -m dwgworker parse "共有内のパス.dxf" --bom            # 部品表を表の形で表示
+.venv/bin/python -m dwgworker bomtest [フォルダ] --kind dxf --limit 30  # 部品表を試しに読んで CSV に保存（DB は変えない）
 .venv/bin/python -m dwgworker scan            # 1回巡回
 .venv/bin/python -m dwgworker work            # たまったジョブを処理
 ```

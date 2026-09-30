@@ -11,7 +11,7 @@ import time
 
 import pymupdf
 
-from . import ocr_mac, titleblock
+from . import bom, ocr_mac, titleblock
 from .config import CONFIG
 
 log = logging.getLogger("dwgworker")
@@ -80,7 +80,19 @@ def _drawing(fields, source, conf, needs_ocr, attrs):
             "attributes": {**attrs, **{k: fields[k] for k in EXTRA_FIELDS if fields.get(k)}}}
 
 
-def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
+def _bom(items, own_no, force):
+    """部品表と注記の参照図番。スキャン PDF の部品表は試験中のため、BOM_PDF=1 か force のときだけ。"""
+    refs = bom.note_refs([i["text"] for i in items], own_no)
+    if not (CONFIG.bom_pdf or force):
+        return [], refs
+    try:
+        return bom.extract(items), refs
+    except Exception as e:  # noqa: BLE001
+        log.warning("部品表の読み取りに失敗: %s", e)
+        return [], refs
+
+
+def parse(data: bytes, path: str, force_bom: bool = False) -> tuple[dict, dict[int, bytes]]:
     """({"drawings": [...]}, {ページ番号: サムネイルPNG}) を返す。"""
     doc = pymupdf.open(stream=data, filetype="pdf")
     pages = []
@@ -116,21 +128,23 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
                 f["title"] = f"{fields.get('title', '')}（{p['page_no']}/{len(pages)}）".strip()
             f["file_title"] = fields.get("title", "")
             pconf = 0.75 if p["tb_codes"] else 0.4
-            attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5]}
+            rows, refs = _bom(p["items"], f["drawing_no"], force_bom)
+            attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5], **({"note_refs": refs} if refs else {})}
             drawings.append({"page_no": p["page_no"],
                              "drawing": _drawing(f, "ocr" if p["text_source"] == "ocr" else source, pconf,
                                                  p["scanned"] and p["text_source"] != "ocr", attrs),
                              "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]}],
-                             "bom": []})
+                             "bom": rows})
             thumbs[p["page_no"]] = _thumb(doc[p["page_no"] - 1])
     else:
         if not fields["drawing_no"] and pages and pages[0]["tb_codes"]:  # ファイル名に図番がなければ表題欄の図番
             fields["drawing_no"] = pages[0]["tb_codes"][0]
             conf = 0.75
-        attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else []}
+        rows, refs = _bom(pages[0]["items"] if pages else [], fields.get("drawing_no", ""), force_bom)
+        attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else [], **({"note_refs": refs} if refs else {})}
         drawings.append({"page_no": 1, "drawing": _drawing(fields, source, conf, needs_ocr, attrs),
                          "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]} for p in pages],
-                         "bom": []})
+                         "bom": rows})
         if len(doc):
             thumbs[1] = _thumb(doc[0])
     return {"drawings": drawings, "items": pages[0]["items"] if pages else []}, thumbs

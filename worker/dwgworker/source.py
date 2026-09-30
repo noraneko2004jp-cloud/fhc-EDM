@@ -50,8 +50,8 @@ def _top_ok(name):
     return not CONFIG.include or _n(name) in {_n(x) for x in CONFIG.include}
 
 
-def walk(root=None):
-    """(相対パス, サイズ, 更新UNIX秒) を順に返す。"""
+def walk(root=None, use_include=True):
+    """(相対パス, サイズ, 更新UNIX秒) を順に返す。use_include=False なら SCAN_INCLUDE で絞らない（途中のフォルダから巡るとき）。"""
     root = root or CONFIG.source_root
     if not root:
         raise RuntimeError("SOURCE_ROOT が設定されていません")
@@ -70,7 +70,7 @@ def walk(root=None):
                 if _excluded(rel):
                     continue
                 if e.is_dir():
-                    if rel_dir or _top_ok(e.name):
+                    if rel_dir or not use_include or _top_ok(e.name):
                         stack.append(rel)
                 elif PurePosixPath(e.name).suffix.lower() in EXTS:
                     try:
@@ -83,12 +83,12 @@ def walk(root=None):
         base = Path(root)
         for dirpath, dirnames, filenames in os.walk(base):
             rel_dir = Path(dirpath).relative_to(base).as_posix()
-            dirnames[:] = [d for d in dirnames if not _excluded(f"{rel_dir}/{d}") and (rel_dir != "." or _top_ok(d))]
+            dirnames[:] = [d for d in dirnames if not _excluded(f"{rel_dir}/{d}") and (rel_dir != "." or not use_include or _top_ok(d))]
             for name in filenames:
                 if Path(name).suffix.lower() not in EXTS:
                     continue
                 rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-                if _excluded(rel) or (rel_dir == "." and CONFIG.include):
+                if _excluded(rel) or (rel_dir == "." and CONFIG.include and use_include):
                     continue
                 st = os.stat(Path(dirpath) / name)
                 if stat.S_ISREG(st.st_mode):

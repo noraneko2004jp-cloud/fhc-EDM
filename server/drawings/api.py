@@ -194,6 +194,8 @@ def _save_drawing(request, f, page_no, d, pages, bom):
         BomItem(drawing=drawing, row=i + 1, item_no=str(b.get("item_no", ""))[:16],
                 part_no=str(b.get("part_no", ""))[:64], name=str(b.get("name", ""))[:255],
                 qty=_num(b.get("qty")), material=str(b.get("material", ""))[:128],
+                thickness=str(b.get("thickness", ""))[:32], width=str(b.get("width", ""))[:32],
+                length=str(b.get("length", ""))[:32], note=str(b.get("note", ""))[:255],
                 ref_drawing_no=str(b.get("ref_drawing_no", ""))[:64], raw_text=str(b.get("raw_text", "")),
                 confidence=float(b.get("confidence", 1.0)))
         for i, b in enumerate(bom)

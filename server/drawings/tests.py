@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import time
@@ -475,3 +476,93 @@ class ReclassifyCommandTests(TestCase):
         call_command("reclassify", stdout=io.StringIO())
         d.refresh_from_db()
         self.assertEqual(d.doc_type, "other")
+
+
+@override_settings(WORKER_TOKEN=TOKEN, WORKER_ALLOWED_IPS=[], ALLOWED_HOSTS=["testserver"])
+class BomRelationTests(TestCase):
+    """部品表の登録・関連図面（使う部品／使っている図面）・まとめ Excel・入れ直し。"""
+
+    def setUp(self):
+        self.media = tempfile.TemporaryDirectory()
+        self.enterContext(override_settings(MEDIA_ROOT=self.media.name))
+        u = User.objects.create_user("u", password="pw-12345678")
+        u.groups.add(Group.objects.get(name="User"))
+        self.client.login(username="u", password="pw-12345678")
+
+    def post_result(self, path, no, bom, note_refs=None, kind="dxf"):
+        post_json(self.client, "/api/internal/scan", {"files": [{"path": path, "size": 1, "mtime": time.time()}]})
+        job = post_json(self.client, "/api/internal/jobs/claim", {"limit": 1}).json()["jobs"][0]
+        attrs = {"note_refs": note_refs} if note_refs else {}
+        data = {"drawings": [{"page_no": 1, "drawing": {"drawing_no": no, "title": no + " の図", "source": "attrib",
+                                                          "confidence": 0.97, "attributes": attrs},
+                              "pages": [{"page_no": 1, "text": no}], "bom": bom}]}
+        r = self.client.post(f"/api/internal/jobs/{job['job_id']}/result", {"data": json.dumps(data)}, HTTP_AUTHORIZATION=f"Bearer {TOKEN}")
+        self.assertEqual(r.status_code, 200, r.content)
+        return Drawing.objects.get(file__path=path)
+
+    def test_relations_and_export(self):
+        panel = self.post_result("図面/CAK/HDBY003920.dxf", "HDBY003920", [
+            {"item_no": "1", "part_no": "HDBY003930", "name": "フレーム/ハイキパネル", "qty": "1", "ref_drawing_no": "HDBY003930",
+             "confidence": 0.8},
+            {"item_no": "2", "part_no": "P", "name": "エンボスカラー", "qty": "1", "material": "C01", "thickness": "0.25",
+             "width": "914.00", "length": "2443", "confidence": 1.0},
+        ], note_refs=["HUCP101040"])
+        frame = self.post_result("図面/CAK/HDBY003930.dxf", "HDBY003930", [])
+        b = panel.bom_items.get(row=2)
+        self.assertEqual((b.thickness, b.width, b.length), ("0.25", "914.00", "2443"))
+        # パネル → 使う部品にフレーム、注記の参照（図面はまだない）
+        r = self.client.get(f"/d/{panel.pk}/")
+        uses = {u["no"]: u for u in r.context["uses"]}
+        self.assertEqual([x.pk for x in uses["HDBY003930"]["drawings"]], [frame.pk])
+        self.assertEqual(uses["HUCP101040"]["drawings"], [])
+        self.assertEqual(r.context["bom"][0].ref_found.pk, frame.pk)
+        # フレーム → 使っている図面にパネル
+        r = self.client.get(f"/d/{frame.pk}/")
+        self.assertEqual([u["drawing"].pk for u in r.context["used_by"]], [panel.pk])
+        # 注記で参照された図面が後から登録されても、すぐにつながる
+        detail = self.post_result("図面/HUCP101040.dxf", "HUCP101040", [])
+        r = self.client.get(f"/d/{detail.pk}/")
+        self.assertEqual([(u["drawing"].pk, u["via"]) for u in r.context["used_by"]], [(panel.pk, "注記")])
+        # 品番で逆引き：部品表の品番で検索すると、使っている図面が出る
+        r = self.client.get("/", {"q": "HDBY003930"})
+        self.assertIn(panel.pk, [it["d"].pk for it in r.context["items"]])
+        # まとめ Excel（一覧の条件どおり）
+        from openpyxl import load_workbook
+        r = self.client.get("/export/bom.xlsx", {"q": "HDBY"})
+        self.assertEqual(r.status_code, 200)
+        wb = load_workbook(io.BytesIO(b"".join(r.streaming_content)))
+        rows = list(wb["部品表"].iter_rows(min_row=4, values_only=True))
+        self.assertEqual([x[5] for x in rows], ["HDBY003930", "P"])
+        summary = list(wb["集計"].iter_rows(min_row=2, values_only=True))
+        self.assertEqual(summary[0][0], "HDBY003930")
+        self.assertTrue(AuditLog.objects.filter(action="export", target__startswith="部品表まとめ").exists())
+
+    def test_guest_does_not_see_hidden_relations(self):
+        panel = self.post_result("物件/山田様 契約書.dxf", "HDBY003920",
+                                 [{"item_no": "1", "part_no": "HDBY003930", "ref_drawing_no": "HDBY003930"}])
+        frame = self.post_result("図面/HDBY003930.dxf", "HDBY003930", [])
+        self.assertEqual(Drawing.objects.get(pk=panel.pk).doc_type, "contract")
+        g = User.objects.create_user("g", password="pw-12345678")
+        g.groups.add(Group.objects.get(name="Guest"))
+        self.client.logout()
+        self.client.login(username="g", password="pw-12345678")
+        r = self.client.get(f"/d/{frame.pk}/")
+        self.assertEqual(r.context["used_by"], [])  # 契約書の中の部品表からはつながない
+        r = self.client.get("/export/bom.xlsx", {"t": "all"})
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(b"".join(r.streaming_content)))
+        self.assertEqual(list(wb["部品表"].iter_rows(min_row=4, values_only=True)), [])
+
+    def test_requeue_command(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        for p in ("a/1.dxf", "a/2.dxf", "b/3.dxf", "a/4.pdf"):
+            SourceFile.objects.create(path=p, kind=p[-3:], size=1, mtime=now, status="done")
+        out = io.StringIO()
+        call_command("requeue", "--kind", "dxf", "--dry-run", stdout=out)
+        self.assertIn("3 件", out.getvalue())
+        self.assertEqual(Job.objects.count(), 0)
+        call_command("requeue", "--kind", "dxf", "--path", "a", stdout=io.StringIO())
+        self.assertEqual(sorted(Job.objects.values_list("file__path", "priority")), [("a/1.dxf", 200), ("a/2.dxf", 200)])
+        call_command("requeue", "--kind", "dxf", stdout=io.StringIO())  # 待ち中のものは重ねない
+        self.assertEqual(Job.objects.count(), 3)

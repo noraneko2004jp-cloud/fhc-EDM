@@ -45,10 +45,22 @@ document.addEventListener("keydown", function(e){
 <h2>部品表 <span class="muted" style="font-weight:400">{{ bom|length }} 行</span></h2>
 {% if bom %}
 <div class="tw"><table>
-  <thead><tr><th>No.</th><th>品番</th><th>品名</th><th class="num">数量</th><th>材質</th><th>図番</th><th class="num">信頼度</th></tr></thead>
-  <tbody>{% for b in bom %}<tr class="{% if b.confidence < 0.8 %}low{% endif %}"><td>{{ b.item_no|default:b.row }}</td><td class="no">{{ b.part_no }}</td><td>{{ b.name }}</td><td class="num">{{ b.qty|default_if_none:"—"|floatformat:"-2" }}</td><td>{{ b.material }}</td><td class="no">{% if b.ref_drawing_no %}<a href="{% url 'index' %}?q={{ b.ref_drawing_no|urlencode }}">{{ b.ref_drawing_no }}</a>{% else %}—{% endif %}</td><td class="num">{{ b.confidence|floatformat:2 }}</td></tr>{% endfor %}</tbody>
+  <thead><tr><th>No.</th><th>図番又は品番</th><th>名称・規格</th><th class="num">員数</th><th>材質</th><th>厚さ×幅×長さ</th><th>関連図面</th><th class="num">信頼度</th></tr></thead>
+  <tbody>{% for b in bom %}<tr class="{% if b.confidence < 0.8 %}low{% endif %}"><td>{{ b.item_no|default:b.row }}</td><td class="no">{{ b.part_no }}</td><td>{{ b.name }}</td><td class="num">{{ b.qty|default_if_none:"—"|floatformat:"-2" }}</td><td>{{ b.material }}</td><td class="no">{% if b.thickness or b.width or b.length %}{{ b.thickness|default:"—" }}×{{ b.width|default:"—" }}×{{ b.length|default:"—" }}{% endif %}</td><td class="no">{% if b.ref_found %}<a href="{% url 'detail' b.ref_found.pk %}{{ keep }}" title="{{ b.ref_found.title }}">{{ b.ref_drawing_no }} →</a>{% elif b.ref_drawing_no %}<a href="{% url 'index' %}?q={{ b.ref_drawing_no|urlencode }}" class="muted" title="この図番の図面はまだ見つかっていません。検索します">{{ b.ref_drawing_no }}</a>{% else %}—{% endif %}</td><td class="num">{{ b.confidence|floatformat:2 }}</td></tr>{% endfor %}</tbody>
 </table></div>
-{% else %}<p class="muted">部品表は読み取れていません（部品表の抽出は Phase 2 で追加します）。</p>{% endif %}
+<p class="muted" style="font-size:12px;margin:6px 0 0">部品表は図面から自動で読み取ったものです。黄色の行は読み取りに自信がない行です。</p>
+{% else %}<p class="muted">部品表は読み取れていません。</p>{% endif %}
+{% if uses or used_by %}
+<h2>関連図面</h2>
+<div class="rel">
+  <section><h3>この図面が使う部品の図面</h3>
+  {% for u in uses %}<div class="relrow">{% if u.drawings %}{% for x in u.drawings|slice:":3" %}<a href="{% url 'detail' x.pk %}{{ keep }}" class="no">{{ x.drawing_no }}</a> <span class="ellip">{{ x.title|default:x.file.filename }}</span>{% endfor %}{% else %}<a class="no muted" href="{% url 'index' %}?q={{ u.no|urlencode }}" title="この図番の図面はまだ見つかっていません">{{ u.no }}</a> <span class="muted">（図面なし）</span>{% endif %}<span class="pill">{{ u.via }}{% if u.rows %} {{ u.rows.0.item_no|default:u.rows.0.row }}行目{% endif %}</span></div>
+  {% empty %}<p class="muted">なし</p>{% endfor %}</section>
+  <section><h3>この図面を使っている図面</h3>
+  {% for u in used_by %}<div class="relrow"><a href="{% url 'detail' u.drawing.pk %}{{ keep }}" class="no">{{ u.drawing.drawing_no|default:"（図番不明）" }}</a> <span class="ellip">{{ u.drawing.title|default:u.drawing.file.filename }}</span><span class="pill">{{ u.via }}{% if u.row %} {{ u.row.item_no|default:u.row.row }}行目 ×{{ u.row.qty|default_if_none:"?"|floatformat:"-2" }}{% endif %}</span></div>
+  {% empty %}<p class="muted">なし</p>{% endfor %}</section>
+</div>
+{% endif %}
 {% if siblings %}
 <h2>同じファイルの図面 <span class="muted" style="font-weight:400">{{ siblings|length }} 件</span></h2>
 <div class="grid">{% for s in siblings %}

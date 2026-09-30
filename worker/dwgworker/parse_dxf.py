@@ -8,7 +8,7 @@ import logging
 import ezdxf
 from ezdxf import recover
 
-from . import titleblock
+from . import bom, titleblock
 from .config import CONFIG
 
 log = logging.getLogger("dwgworker")
@@ -123,6 +123,13 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
     if source == "attrib" and conf < 0.9:
         source = "text"
     text = "\n".join(i["text"] for i in items)
+    try:
+        bom_rows = bom.extract(items)
+        refs = bom.note_refs([i["text"] for i in items], fields.get("drawing_no", ""))
+        bom_error = ""
+    except Exception as e:  # 部品表が読めなくても図面は登録する
+        bom_rows, refs, bom_error = [], [], f"{type(e).__name__}: {e}"[:300]
+        log.warning("部品表の読み取りに失敗 %s: %s", path, bom_error)
     thumb, thumb_error = None, ""
     try:
         target = paper[0] if paper and len(msp) == 0 else msp
@@ -135,11 +142,13 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
                "attributes": {"dxf_version": doc.dxfversion, "codepage": doc.header.get("$DWGCODEPAGE", ""),
                               "audit_errors": len(auditor.errors), "codepage_fixed": cp_fixed, "attribs": attribs[:200],
                               **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]},
+                              **({"note_refs": refs} if refs else {}),
+                              **({"bom_error": bom_error} if bom_error else {}),
                               **({"thumb_error": thumb_error} if thumb_error else {})}}
     result = {
         "drawings": [{"page_no": 1, "drawing": drawing,
                       "pages": [{"page_no": 1, "text": text, "text_source": "attrib" if attribs else "text"}],
-                      "bom": []}],  # 部品表の抽出は Phase 2
+                      "bom": bom_rows}],
         "items": items,
     }
     return result, ({1: thumb} if thumb else {})

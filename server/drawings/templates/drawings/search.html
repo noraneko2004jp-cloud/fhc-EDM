@@ -14,6 +14,7 @@
 <nav class="tabs" aria-label="見せ方">{% for k, label, link in tabs %}<a href="{% url 'index' %}{{ link }}" {% if k == st.v %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
 <div class="expand">
   {% if terms|length > 1 %}辞書で展開：{% for t in terms %}<span class="chip {% if not forloop.first %}syn{% endif %}">{{ t }}</span>{% endfor %}{% endif %}
+  {% if total %}<a class="exp" href="{% url 'bom_export' %}{{ page_qs }}" title="この一覧に入っている図面の部品表を 1 つの Excel にまとめます（最大 5000 枚）">部品表をExcelにまとめる</a>{% endif %}
   <span style="margin-left:auto">{{ total }} 件{% if drawing_total and drawing_total != total %}（図面 {{ drawing_total }} 枚）{% endif %}{% if page.paginator.num_pages > 1 %} ・ {{ page.start_index }}〜{{ page.end_index }} 件目{% endif %}</span>
 </div>
 <div class="{% if st.v != 'list' %}browse{% endif %}">

@@ -8,6 +8,7 @@ urlpatterns = [
     path("d/<int:pk>/thumb.png", views.thumbnail, name="thumbnail"),
     path("d/<int:pk>/download", views.download, name="download"),
     path("d/<int:pk>/bom.xlsx", views.bom_xlsx, name="bom_xlsx"),
+    path("export/bom.xlsx", views.bom_export, name="bom_export"),
     path("api/internal/health", api.health),
     path("api/internal/scan", api.scan),
     path("api/internal/scan/finish", api.scan_finish),

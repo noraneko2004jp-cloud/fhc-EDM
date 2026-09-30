@@ -4,6 +4,9 @@
   python -m dwgworker work --once  たまっているジョブを処理して終わる
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
   python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用。スキャンPDFはOCRも行う）
+                                  FILE は手元のファイルか、共有フォルダ内のパス。--bom で部品表を表の形で表示
+  python -m dwgworker bomtest [フォルダ] --kind dxf --limit 30
+                                  共有フォルダの図面の部品表を試しに読み、結果を表示して CSV に保存（サーバー・DB は変えない）
   python -m dwgworker probe [smb://サーバー/共有] [--minutes 10]
                                    ファイルサーバーに接続し、直下のフォルダごとの件数を表示（読み取りのみ）
 """
@@ -115,11 +118,77 @@ def probe(root, seconds=120):
     return 0
 
 
+def print_bom(path, dr):
+    d = dr["drawing"]
+    rows = dr.get("bom") or []
+    refs = d.get("attributes", {}).get("note_refs") or []
+    print(f"■ {path}  p{dr['page_no']}  図番 {d.get('drawing_no') or '（不明）'}  部品表 {len(rows)} 行"
+          + (f"  注記の参照図番 {' '.join(refs)}" if refs else ""))
+    for r in rows:
+        dims = "×".join(x for x in (r.get("thickness"), r.get("width"), r.get("length")) if x)
+        print(f"  {r['item_no']:>3} | {r['part_no'][:22]:<22} | {r['name'][:30]:<30} | {r['qty']:>4} | {r['material'][:10]:<10} | {dims}"
+              + (f"  → 図面 {r['ref_drawing_no']}" if r.get("ref_drawing_no") else ""))
+
+
+def bomtest(folder, kind, limit, every):
+    """共有フォルダの図面の部品表を試しに読む（DB・サーバーは変えない）。結果は画面と CSV に出す。"""
+    import csv
+    from datetime import datetime
+
+    from . import parse_dxf, parse_pdf
+    logging.getLogger().setLevel(logging.ERROR)
+    root = CONFIG.source_root.rstrip("/") + ("/" + folder.strip("/") if folder else "")
+    out = Path(f"bomtest-{kind}-{datetime.now():%Y%m%d-%H%M}.csv")
+    stats = {"files": 0, "with_bom": 0, "rows": 0, "refs": 0, "errors": 0}
+    seen = 0
+    with out.open("w", newline="", encoding="utf-8-sig") as fh:  # Excel で文字化けしないよう BOM 付き UTF-8
+        w = csv.writer(fh)
+        w.writerow(["ファイル", "ページ", "図番", "No", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ",
+                    "関連図面", "信頼度", "注記の参照図番"])
+        for rel, _size, _mtime in source.walk(root, use_include=not folder):
+            if not rel.lower().endswith("." + kind):
+                continue
+            seen += 1
+            if (seen - 1) % max(every, 1):
+                continue
+            full = f"{folder.strip('/')}/{rel}" if folder else rel
+            stats["files"] += 1
+            try:
+                data = source.read_bytes(rel, root)
+                res, _ = parse_dxf.parse(data, full) if kind == "dxf" else parse_pdf.parse(data, full, force_bom=True)
+            except Exception as e:  # noqa: BLE001
+                stats["errors"] += 1
+                print(f"× {full}: {type(e).__name__}: {e}")
+                continue
+            for dr in res["drawings"]:
+                rows = dr.get("bom") or []
+                refs = dr["drawing"].get("attributes", {}).get("note_refs") or []
+                print_bom(full, dr)
+                stats["with_bom"] += bool(rows)
+                stats["rows"] += len(rows)
+                stats["refs"] += sum(1 for r in rows if r.get("ref_drawing_no"))
+                for r in rows or [{}]:
+                    w.writerow([full, dr["page_no"], dr["drawing"].get("drawing_no", ""), r.get("item_no", ""),
+                                r.get("part_no", ""), r.get("name", ""), r.get("qty", ""), r.get("material", ""),
+                                r.get("thickness", ""), r.get("width", ""), r.get("length", ""), r.get("ref_drawing_no", ""),
+                                r.get("confidence", ""), " ".join(refs)])
+            if stats["files"] >= limit:
+                break
+    print(f"\n読んだファイル {stats['files']} 件 / 部品表あり {stats['with_bom']} 件 / 行 {stats['rows']} / "
+          f"関連図面つきの行 {stats['refs']} / 読めなかった {stats['errors']} 件")
+    print(f"結果を {out.resolve()} に保存しました（Excel で開けます）")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="dwgworker")
-    ap.add_argument("cmd", choices=["check", "scan", "work", "run", "parse", "probe"])
+    ap.add_argument("cmd", choices=["check", "scan", "work", "run", "parse", "probe", "bomtest"])
     ap.add_argument("file", nargs="?")
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--bom", action="store_true", help="parse：部品表を表の形で表示（スキャン PDF も読む）")
+    ap.add_argument("--kind", choices=["dxf", "pdf"], default="dxf", help="bomtest：対象の種類")
+    ap.add_argument("--limit", type=int, default=30, help="bomtest：読むファイル数")
+    ap.add_argument("--every", type=int, default=1, help="bomtest：見つけたファイルを何件おきに読むか（広く散らして試す）")
     ap.add_argument("--minutes", type=float, default=2, help="probe で数える時間（分）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -127,10 +196,21 @@ def main(argv=None):
     for name in ("smbprotocol", "smbclient", "spnego"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
+    if a.cmd == "bomtest":
+        return bomtest(a.file or "", a.kind, a.limit, a.every)
+
     if a.cmd == "parse":
         from . import parse_dxf, parse_pdf
         p = Path(a.file)
-        res, thumbs = (parse_dxf if p.suffix.lower() == ".dxf" else parse_pdf).parse(p.read_bytes(), p.name)
+        data = p.read_bytes() if p.exists() else source.read_bytes(a.file)  # 手元になければ共有フォルダから
+        if p.suffix.lower() == ".dxf":
+            res, thumbs = parse_dxf.parse(data, a.file)
+        else:
+            res, thumbs = parse_pdf.parse(data, a.file, force_bom=a.bom)
+        if a.bom:
+            for dr in res["drawings"]:
+                print_bom(a.file, dr)
+            return 0
         res.pop("items", None)
         for dr in res["drawings"]:
             for pg in dr["pages"]:
