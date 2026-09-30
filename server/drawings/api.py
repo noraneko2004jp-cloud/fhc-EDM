@@ -214,7 +214,7 @@ def _save_drawing(request, f, page_no, d, pages, bom):
         *[" ".join([b.part_no, b.name, b.material, b.ref_drawing_no]) for b in drawing.bom_items.all()],
         *[(p.get("text") or "")[:6000] for p in pages],
     )
-    classify.apply(drawing)
+    classify.apply(drawing, text="\n".join((p.get("text") or "")[:3000] for p in pages[:3]))
     drawing.save()
     return drawing
 

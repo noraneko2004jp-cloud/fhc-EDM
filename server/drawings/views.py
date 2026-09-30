@@ -8,7 +8,7 @@ from django.conf import settings
 from pathlib import Path
 
 from .models import AuditLog, Drawing
-from . import browse
+from . import access, browse
 from .sources import open_source
 
 
@@ -37,7 +37,7 @@ def _page_window(page, around=2):
 
 def _state(request):
     """見せ方は URL で指定がなければ前回使ったもの（セッションに覚える）。"""
-    st = browse.state_from(request.GET, request.session.get("view", "list"))
+    st = browse.state_from(request.GET, request.session.get("view", "list"), access.can_see_all(request.user))
     if request.GET.get("v") in browse.VIEWS:
         request.session["view"] = st["v"]
     return st
@@ -45,7 +45,7 @@ def _state(request):
 
 def index(request):
     st = _state(request)
-    terms, qs = browse.filtered(st)
+    terms, qs = browse.filtered(st, request.user)
     page = Paginator(browse.groups(qs, st["v"]), PER_PAGE).get_page(request.GET.get("page"))
     base = page.start_index() - 1 if page.paginator.count else 0
     items = [{"i": base + n, "row": r, "d": d, "size": size, "link": browse.qs_string(st, i=base + n)}
@@ -53,7 +53,7 @@ def index(request):
     tabs = [(k, label, browse.qs_string({"q": st["q"], "kind": st["kind"], "v": k}) or "?v=list")
             for k, label in browse.VIEWS.items()]
     # 階層は、検索語・種類だけで絞った全体から作る（選んだ枝の兄弟も見えるように）
-    nodes = browse.tree(st, browse.filtered({**st, "f": "", "m": "", "s": ""})[1]) if st["v"] != "list" else []
+    nodes = browse.tree(st, browse.filtered({**st, "f": "", "m": "", "s": ""}, request.user)[1]) if st["v"] != "list" else []
     for nd in nodes:
         key = {"folder": "f", "model": "m", "series": "s"}[st["v"]]
         nd["link"] = browse.qs_string(st, **{key: nd["value"]}) if nd["value"] is not None else ""
@@ -65,21 +65,22 @@ def index(request):
         "items": items, "window": _page_window(page), "page_qs": browse.qs_string(st),
         "tabs": tabs, "nodes": nodes, "crumbs": crumbs,
         "top_link": browse.qs_string(st, **{sel_key: ""}) if sel_key else "", "view_label": browse.VIEWS[st["v"]],
+        "see_all": access.can_see_all(request.user), "doc_filters": browse.DOC_FILTERS,
     })
 
 
 def detail(request, pk):
     """一覧から開いたときは一覧の条件と i（一覧での位置）を受け取り、
     「一覧に戻る」で同じページ・同じ位置へ戻れるようにし、前後の図面（ファイル）へ移れるようにする。"""
-    d = get_object_or_404(Drawing.objects.select_related("file"), pk=pk)
+    d = get_object_or_404(access.visible(request.user, Drawing.objects.select_related("file")), pk=pk)
     AuditLog.objects.create(user=request.user, action=AuditLog.Action.VIEW, target=d.file.path)
-    st = browse.state_from(request.GET, request.session.get("view", "list"))
+    st = browse.state_from(request.GET, request.session.get("view", "list"), access.can_see_all(request.user))
     i = _int(request.GET.get("i"))
     back_page = _int(request.GET.get("p"), 1) or 1
     nav = {}
     if i is not None:
         back_page = i // PER_PAGE + 1
-        _, qs = browse.filtered(st)
+        _, qs = browse.filtered(st, request.user)
         ordered = browse.groups(qs, st["v"])
         lo = max(i - 1, 0)
         rows = browse.drawings_for(ordered[lo:i + 2])
@@ -95,8 +96,9 @@ def detail(request, pk):
     if i is not None:
         back += f"#f{d.file_id}"
     keep = browse.qs_string(st, p=back_page if back_page > 1 else "")  # 同じファイルの図面などへ移っても戻り先を保つ
-    revisions = Drawing.objects.filter(drawing_no=d.drawing_no).exclude(pk=d.pk).select_related("file") if d.drawing_no else []
-    siblings = d.file.drawings.exclude(pk=d.pk).order_by("page_no")  # 同じ図面一式の他のページ
+    revisions = (access.visible(request.user).filter(drawing_no=d.drawing_no).exclude(pk=d.pk).select_related("file")
+                 if d.drawing_no else [])
+    siblings = access.visible(request.user, d.file.drawings.exclude(pk=d.pk)).order_by("page_no")  # 同じ図面一式の他のページ
     folder = d.file.path.rsplit("/", 1)[0] if "/" in d.file.path else ""
     return render(request, "drawings/detail.html", {
         "d": d, "bom": d.bom_items.all(), "revisions": revisions, "siblings": siblings, "q": st["q"],
@@ -108,7 +110,7 @@ def detail(request, pk):
 
 
 def thumbnail(request, pk):
-    d = get_object_or_404(Drawing, pk=pk)
+    d = get_object_or_404(access.visible(request.user), pk=pk)
     if not d.thumbnail:
         raise Http404
     p = Path(settings.MEDIA_ROOT) / d.thumbnail
@@ -120,7 +122,7 @@ def thumbnail(request, pk):
 
 
 def download(request, pk):
-    d = get_object_or_404(Drawing.objects.select_related("file"), pk=pk)
+    d = get_object_or_404(access.visible(request.user, Drawing.objects.select_related("file")), pk=pk)
     try:
         fh = open_source(d.file.path)
     except (OSError, ValueError) as e:
@@ -133,7 +135,7 @@ def bom_xlsx(request, pk):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
-    d = get_object_or_404(Drawing.objects.select_related("file"), pk=pk)
+    d = get_object_or_404(access.visible(request.user, Drawing.objects.select_related("file")), pk=pk)
     wb = Workbook()
     ws = wb.active
     ws.title = "部品表"

@@ -2,7 +2,8 @@ import json
 import tempfile
 import time
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from .models import AuditLog, DictionaryEntry, Drawing, Job, SourceFile
@@ -128,9 +129,10 @@ class SearchViewTests(TestCase):
     def setUp(self):
         from datetime import datetime, timezone
         self.user = User.objects.create_user("u", password="pw-12345678")
+        self.user.groups.add(Group.objects.get(name="User"))
         for i, (no, title, part) in enumerate([("UH-3600", "事務所", "WP-900"), ("UH-3600-01", "トイレ付事務所", "TL-01"), ("UH-3602", "コーナー柱", "UC-2400")]):
             f = SourceFile.objects.create(path=f"d/{no}.dxf", kind="dxf", size=1, mtime=datetime.now(timezone.utc))
-            d = Drawing.objects.create(file=f, drawing_no=no, title=title)
+            d = Drawing.objects.create(file=f, drawing_no=no, title=title, doc_type="drawing")
             d.bom_items.create(row=1, part_no=part, name=title)
             from .text import build_search_text
             d.search_text = build_search_text(no, title, part)
@@ -165,7 +167,7 @@ class SearchViewTests(TestCase):
         from .text import build_search_text
         for n in range(120):
             f = SourceFile.objects.create(path=f"p/ZZ{n:04d}.pdf", kind="pdf", size=1, mtime=datetime.now(timezone.utc))
-            Drawing.objects.create(file=f, drawing_no=f"ZZ{n:04d}", search_text=build_search_text(f"ZZ{n:04d}"))
+            Drawing.objects.create(file=f, drawing_no=f"ZZ{n:04d}", search_text=build_search_text(f"ZZ{n:04d}"), doc_type="drawing")
         self.client.login(username="u", password="pw-12345678")
         r = self.client.get("/", {"q": "ZZ", "kind": "pdf", "page": 2})
         it = r.context["items"][0]
@@ -220,7 +222,7 @@ class BrowseViewTests(TestCase):
         from datetime import datetime, timezone
         from . import classify
         from .text import build_search_text
-        User.objects.create_user("u", password="pw-12345678")
+        User.objects.create_user("u", password="pw-12345678").groups.add(Group.objects.get(name="User"))
         self.client.login(username="u", password="pw-12345678")
         now = datetime.now(timezone.utc)
         rows = [("図面/CAK/CAK-A/20-032 CAK-A 図面一式.pdf", [(1, "HDBY003920"), (2, "HDBY003930"), (3, "HDBY004010")]),
@@ -231,8 +233,9 @@ class BrowseViewTests(TestCase):
             f = SourceFile.objects.create(path=path, kind=path[-3:], size=1, mtime=now)
             for page_no, no in pages:
                 d = Drawing(file=f, page_no=page_no, drawing_no=no, attributes={"pages": len(pages)},
-                            search_text=build_search_text(no, path))
-                classify.apply(d)
+                            search_text=build_search_text(no, path), confidence=0.75)
+                classify.apply(d, text="")
+                d.doc_type = "drawing"
                 d.save()
 
     def test_list_collapses_drawing_sets(self):
@@ -283,3 +286,121 @@ class BrowseViewTests(TestCase):
         self.assertIn("f=", r.context["back"])
         self.assertEqual(r.context["nav"]["total"], 3)
         self.assertTrue(r.context["folder_link"])
+
+
+class DocTypeTests(TestCase):
+    def test_rules(self):
+        from .classify import doc_type_of as t
+        self.assertEqual(t("物件/2024/山田様 契約書.pdf"), "contract")
+        self.assertEqual(t("物件/見積/HB0011XXXX.pdf", "HB0011XXXX", "filename", 0.9), "contract")  # フォルダの語が先
+        self.assertEqual(t("物件/A邸/公図.pdf"), "site")
+        self.assertEqual(t("物件/A邸/建築確認申請 図書一式.pdf"), "application")
+        self.assertEqual(t("図面/HB0011XXXX差替3 スペーサー.pdf", "HB0011XXXX", "filename", 0.9), "drawing")
+        self.assertEqual(t("図面/20-032 CAK-A 多用途ﾊｳｽ 図面一式.pdf"), "drawing")
+        self.assertEqual(t("図面/dxfCAK-40A 田の字36R-221003.dxf", kind="dxf"), "drawing")
+        self.assertEqual(t("図面/scan001.pdf", "HDBY003920", "ocr", 0.75), "drawing")
+        # 名前で分からなければ本文
+        self.assertEqual(t("資料/scan002.pdf", text="工事請負契約書 契約金額 金 1,000,000 円 収入印紙"), "contract")
+        self.assertEqual(t("資料/scan003.pdf", text="地番 123-4 地積 250.00m2 公図 写し"), "site")
+        self.assertEqual(t("資料/scan004.pdf", text="図番 HB0011 尺度 1/10 材質 SS400"), "drawing")
+        self.assertEqual(t("資料/scan005.pdf", text="お知らせ"), "other")  # 迷ったら other（ゲストに見せない）
+
+    def test_manual_fix_is_kept(self):
+        from datetime import datetime, timezone
+        from . import classify
+        f = SourceFile.objects.create(path="資料/公図.pdf", kind="pdf", size=1, mtime=datetime.now(timezone.utc))
+        d = Drawing.objects.create(file=f, doc_type="drawing", doc_type_fixed=True)
+        classify.apply(d, text="")
+        self.assertEqual(d.doc_type, "drawing")
+        d.doc_type_fixed = False
+        classify.apply(d, text="")
+        self.assertEqual(d.doc_type, "site")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class AccessTests(TestCase):
+    def setUp(self):
+        from datetime import datetime, timezone
+        from .text import build_search_text
+        self.media = tempfile.TemporaryDirectory()
+        self.enterContext(override_settings(MEDIA_ROOT=self.media.name))
+        now = datetime.now(timezone.utc)
+        self.d = {}
+        for key, path, doc_type in [("prod", "図面/HB0011XXXX スペーサー.pdf", "drawing"),
+                                    ("contract", "物件/山田様 契約書.pdf", "contract"),
+                                    ("site", "物件/公図.pdf", "site")]:
+            f = SourceFile.objects.create(path=path, kind="pdf", size=1, mtime=now)
+            import pathlib
+            (pathlib.Path(self.media.name) / f"{key}.png").write_bytes(PNG)
+            self.d[key] = Drawing.objects.create(file=f, drawing_no="HB0011XXXX" if key == "prod" else "", doc_type=doc_type,
+                                                 thumbnail=f"{key}.png", search_text=build_search_text(path, "共通語"))
+        self.users = {}
+        for name, group in [("admin1", "Admin"), ("user1", "User"), ("guest1", "Guest"), ("nogroup", None)]:
+            u = User.objects.create_user(name, password="pw-12345678")
+            if group:
+                u.groups.add(Group.objects.get(name=group))
+            self.users[name] = u
+
+    def login(self, name):
+        self.client.logout()
+        self.client.login(username=name, password="pw-12345678")
+
+    def test_guest_sees_only_product_drawings(self):
+        for name in ("guest1", "nogroup"):  # グループなしもゲスト扱い
+            self.login(name)
+            r = self.client.get("/", {"q": "共通語", "t": "all"})  # t=all を付けても無視
+            self.assertEqual(r.context["total"], 1)
+            self.assertNotContains(r, "契約書")
+            self.assertNotContains(r, 'name="t"')  # 種別の切替は出さない
+            r = self.client.get("/", {"v": "folder", "t": "all"})
+            self.assertEqual([n["label"] for n in r.context["nodes"]], ["図面"])  # 階層の件数にも出ない
+            for key in ("contract", "site"):
+                pk = self.d[key].pk
+                for url in (f"/d/{pk}/", f"/d/{pk}/thumb.png", f"/d/{pk}/download", f"/d/{pk}/bom.xlsx"):
+                    self.assertEqual(self.client.get(url).status_code, 404, url)
+            self.assertEqual(self.client.get(f"/d/{self.d['prod'].pk}/").status_code, 200)
+            self.assertEqual(self.client.get(f"/d/{self.d['prod'].pk}/thumb.png").status_code, 200)
+            self.assertNotEqual(self.client.get("/admin/").status_code, 200)
+
+    def test_user_sees_all_but_no_admin(self):
+        self.login("user1")
+        r = self.client.get("/", {"q": "共通語"})
+        self.assertEqual(r.context["total"], 1)  # 既定は製品図面だけ
+        r = self.client.get("/", {"q": "共通語", "t": "all"})
+        self.assertEqual(r.context["total"], 3)
+        r = self.client.get("/", {"q": "共通語", "t": "contract"})
+        self.assertEqual(r.context["total"], 1)
+        self.assertEqual(self.client.get(f"/d/{self.d['contract'].pk}/").status_code, 200)
+        self.assertEqual(self.client.get(f"/d/{self.d['contract'].pk}/thumb.png").status_code, 200)
+        self.assertEqual(self.client.get("/admin/").status_code, 302)  # 管理画面はログイン画面へ
+
+    def test_admin_group_gets_admin_site(self):
+        u = User.objects.get(username="admin1")
+        self.assertTrue(u.is_staff and u.is_superuser)
+        self.login("admin1")
+        self.assertEqual(self.client.get("/admin/").status_code, 200)
+        self.assertEqual(self.client.get(f"/d/{self.d['site'].pk}/").status_code, 200)
+        # Admin から外すと管理権限も外れる（他に管理者がいるとき）
+        User.objects.create_superuser("root2", password="pw-12345678")
+        u.groups.remove(Group.objects.get(name="Admin"))
+        u.refresh_from_db()
+        self.assertFalse(u.is_staff or u.is_superuser)
+
+    def test_last_admin_is_not_demoted(self):
+        u = User.objects.get(username="admin1")
+        u.groups.remove(Group.objects.get(name="Admin"))
+        u.refresh_from_db()
+        self.assertTrue(u.is_superuser)
+
+    def test_superuser_joins_admin_group(self):
+        u = User.objects.create_superuser("root3", password="pw-12345678")
+        self.assertTrue(u.groups.filter(name="Admin").exists())
+
+    def test_set_group_command(self):
+        import io
+        out = io.StringIO()
+        call_command("set_group", "guest1", "user", stdout=out)
+        u = User.objects.get(username="guest1")
+        self.assertEqual(sorted(u.groups.values_list("name", flat=True)), ["User"])
+        call_command("set_group", "--list", stdout=out)
+        self.assertIn("guest1", out.getvalue())

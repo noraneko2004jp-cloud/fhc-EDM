@@ -1,9 +1,10 @@
 {% extends "drawings/base.html" %}{% block content %}
 <form class="search" method="get" action="{% url 'index' %}">
   <input id="q" name="q" value="{{ q }}" type="search" placeholder="図番・品名・部品番号・材質・フォルダ名で検索（/ キーで入力）" aria-label="検索語" autocomplete="off">
-  <select id="kind" name="kind" aria-label="種類" onchange="this.form.submit()"><option value="">すべて</option>
+  <select id="kind" name="kind" aria-label="ファイル形式" onchange="this.form.submit()"><option value="">DXF・PDF</option>
     <option value="dxf" {% if kind == "dxf" %}selected{% endif %}>DXF</option>
     <option value="pdf" {% if kind == "pdf" %}selected{% endif %}>PDF</option></select>
+  {% if see_all %}<select id="t" name="t" aria-label="文書の種類" onchange="this.form.submit()">{% for k, label in doc_filters.items %}<option value="{{ k }}" {% if st.t == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>{% endif %}
   <input type="hidden" name="v" value="{{ st.v }}">
   {% if st.f %}<input type="hidden" name="f" value="{{ st.f }}">{% endif %}
   {% if st.m %}<input type="hidden" name="m" value="{{ st.m }}">{% endif %}
@@ -35,7 +36,7 @@
     <div class="th">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のサムネイル" loading="lazy">{% else %}<span class="muted">プレビューなし</span>{% endif %}
       {% if it.size > 1 %}<span class="set" title="この PDF に {{ it.size }} 枚の図面">一式 {{ it.size }}枚{% if it.row.hits > 1 and it.row.hits < it.size %}・{{ it.row.hits }}枚一致{% endif %}</span>{% endif %}</div>
     <div class="meta">
-      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}{% if it.size > 1 %} p{{ d.page_no }}{% endif %}</span></span>
+      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span>{% if d.doc_type != "drawing" %}<span class="ft doc">{{ d.get_doc_type_display }}</span>{% endif %}<span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}{% if it.size > 1 %} p{{ d.page_no }}{% endif %}</span></span>
       <span class="ellip" style="font-size:13px">{% if d.attributes.model %}<span class="muted">{{ d.attributes.model }}</span> {% endif %}{% if it.size > 1 and d.attributes.file_title %}{{ d.attributes.file_title }}{% else %}{{ d.title|default:d.file.filename }}{% endif %}</span>
       <span class="ellip muted" style="font-size:11.5px" title="{{ d.file.path }}">{{ d.file.path }}</span>
     </div>

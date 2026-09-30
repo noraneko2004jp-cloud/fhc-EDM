@@ -81,14 +81,78 @@ def series_of(drawing_no: str) -> tuple[str, str]:
     return "他", no[:64]
 
 
-def apply(drawing) -> None:
-    """Drawing に型式・系列を入れる（保存はしない）。分類で思わぬ値があっても保存や起動を止めない。"""
+# ---- 文書種別 ----
+# ゲスト（Guest グループ）は DRAWING だけ見られる。判定に迷うものは OTHER にして、ゲストには見せない（安全側）。
+DRAWING, SITE, CONTRACT, APPLICATION, OTHER = "drawing", "site", "contract", "application", "other"
+DOC_TYPES = [(DRAWING, "製品図面"), (SITE, "敷地・土地図"), (CONTRACT, "契約書・見積"), (APPLICATION, "申請書類"),
+             (OTHER, "その他")]
+GUEST_TYPES = {DRAWING}
+# 言葉は NFKC＋大文字で比べる。先に書いた種別ほど優先（契約書に土地の話が出てくることが多いため）
+TYPE_WORDS = {
+    CONTRACT: ["契約書", "契約", "見積書", "見積", "請求書", "注文書", "発注書", "注文請書", "納品書", "領収書", "約款", "覚書",
+               "契約金額", "請負", "収入印紙", "御中"],
+    APPLICATION: ["確認申請", "建築確認", "申請書", "申請図書", "届出", "許可申請", "確認済証", "検査済証", "設置届", "申請"],
+    SITE: ["公図", "地番", "地積", "測量", "登記", "敷地", "土地", "案内図", "現況図", "求積", "境界", "住宅地図", "付近見取図"],
+}
+# ファイル名にあれば製品図面とみなす語（フォルダ名は「図面 DXF…」のように広すぎるので見ない）
+DRAWING_NAME_WORDS = ["図面一式", "組立図", "部品図", "製作図", "詳細図", "姿図", "展開図", "平面図", "立面図", "断面図", "構造図"]
+# 表題欄にある語（本文にこれが 2 つ以上あれば図面らしい）
+TITLEBLOCK_WORDS = ["図番", "尺度", "SCALE", "DRAWING NO", "DWG NO", "三角法", "材質", "製図", "検図", "承認"]
+
+
+def _hits(text, words):
+    return sum(1 for w in words if w in text)
+
+
+def doc_type_of(path, drawing_no="", source="", confidence=0.0, kind="", text="") -> str:
+    """文書種別を返す。順番：
+    1. フォルダ名・ファイル名の言葉（契約・申請・敷地など）
+    2. ファイル名の図面らしい語、表題欄・ファイル名の規則で読めた図番（信頼度 0.75 以上）→ 製品図面
+    3. 本文の言葉（同じ種別の語が 2 つ以上）
+    4. DXF、図番あり、本文に表題欄の語が 2 つ以上 → 製品図面
+    5. それ以外 → その他
+    """
+    p = PurePosixPath(path or "")
+    name = norm(p.stem)
+    folders = norm("/".join(p.parts[:-1]))
+    for t, words in TYPE_WORDS.items():
+        if any(w in name for w in words) or any(w in folders for w in words):
+            return t
+    if any(w in name for w in DRAWING_NAME_WORDS):
+        return DRAWING
+    if drawing_no and (source in ("attrib", "filename") or (confidence or 0) >= 0.75):
+        return DRAWING
+    body = norm((text or "")[:6000])
+    scores = {t: _hits(body, words) for t, words in TYPE_WORDS.items()}
+    best = max(scores, key=lambda t: scores[t])
+    if scores[best] >= 2:
+        return best
+    if (kind or "").lower() == "dxf" or drawing_no or _hits(body, TITLEBLOCK_WORDS) >= 2:
+        return DRAWING
+    return OTHER
+
+
+def apply(drawing, text=None) -> None:
+    """Drawing に型式・系列・文書種別を入れる（保存はしない）。分類で思わぬ値があっても保存や起動を止めない。
+    text はページ本文（省略すると DB のページから読む）。"""
     attrs = drawing.attributes if isinstance(drawing.attributes, dict) else {}
+    if text is None:
+        try:
+            text = "\n".join(drawing.pages.order_by("page_no").values_list("text", flat=True)[:3]) if drawing.pk else ""
+        except Exception:  # noqa: BLE001
+            text = ""
+    try:
+        if not getattr(drawing, "doc_type_fixed", False):
+            drawing.doc_type = doc_type_of(drawing.file.path, drawing.drawing_no, drawing.source, drawing.confidence,
+                                           drawing.file.kind, text)
+    except Exception:  # noqa: BLE001
+        drawing.doc_type = OTHER
     try:
         drawing.model_family, drawing.model_code = model_of(drawing.file.path, attrs)
     except Exception:  # noqa: BLE001
         drawing.model_family, drawing.model_code = NONE, NONE
     try:
-        drawing.series_prefix, drawing.series = series_of(drawing.drawing_no)
+        # 図番の系列は製品図面だけ（契約書などの番号を図番の系列に混ぜない）
+        drawing.series_prefix, drawing.series = series_of(drawing.drawing_no) if drawing.doc_type == DRAWING else (NONE, NONE)
     except Exception:  # noqa: BLE001
         drawing.series_prefix, drawing.series = NONE, NONE

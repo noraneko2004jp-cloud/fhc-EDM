@@ -10,18 +10,24 @@ from urllib.parse import urlencode
 from django.db.models import Count, F, Min, Q, Value
 from django.db.models.functions import StrIndex, Substr
 
+from . import access
 from .classify import NONE
 from .models import Drawing
 from .search import search
 
 VIEWS = {"list": "一覧", "folder": "フォルダ別", "model": "型式別", "series": "図番系列別"}
-STATE_KEYS = ("q", "kind", "v", "f", "m", "s")
+STATE_KEYS = ("q", "kind", "t", "v", "f", "m", "s")
+DOC_FILTERS = {"drawing": "製品図面", "all": "すべての文書", "site": "敷地・土地図", "contract": "契約書・見積",
+               "application": "申請書類", "other": "その他"}
 MAX_CHILDREN = 300  # 左の階層に一度に出す数（図番の系列は数千になるため）
 NONE_LABEL = {"model": "（型式なし）", "series": "（図番なし）"}
 
 
-def state_from(get, default_view="list"):
+def state_from(get, default_view="list", see_all=True):
     st = {k: (get.get(k) or "").strip() for k in STATE_KEYS}
+    # 文書種別：既定は製品図面。ゲストは製品図面だけ（URL で変えても無視）
+    if st["t"] not in DOC_FILTERS or not see_all:
+        st["t"] = "drawing"
     if st["v"] not in VIEWS:
         st["v"] = default_view
     # 見せ方に関係のない絞り込みは外す（タブを切り替えたときに残らないように）
@@ -36,6 +42,8 @@ def qs_string(st, **extra):
     kw = {**{k: st.get(k, "") for k in STATE_KEYS}, **extra}
     if kw.get("v") == "list":
         kw["v"] = ""  # 既定の見せ方は URL に出さない
+    if kw.get("t") == "drawing":
+        kw["t"] = ""
     kw = {k: v for k, v in kw.items() if v not in ("", None)}
     return "?" + urlencode(kw) if kw else ""
 
@@ -46,9 +54,12 @@ def _two_level(value, field_hi, field_lo):
     return Q(**{field_lo: lo}) if lo else Q(**{field_hi: hi})
 
 
-def filtered(st):
-    """(展開語, 条件に合う図面の QuerySet)。"""
+def filtered(st, user):
+    """(展開語, 条件に合い、その人が見てよい図面の QuerySet)。"""
     terms, qs = search(st["q"], st["kind"])
+    qs = access.visible(user, qs)
+    if st["t"] != "all":
+        qs = qs.filter(doc_type=st["t"])
     if st["f"]:
         qs = qs.filter(file__path__startswith=st["f"].rstrip("/") + "/")
     if st["m"]:

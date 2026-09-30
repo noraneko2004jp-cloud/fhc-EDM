@@ -83,3 +83,10 @@ h2{font-size:15px;margin:22px 0 8px}
 .card .th{position:relative}
 .set{position:absolute;right:6px;top:6px;background:var(--ink);color:var(--sheet);font:600 11px var(--font-body);padding:1px 7px}
 @media (max-width:760px){.browse{grid-template-columns:1fr}.side{position:static;max-height:40vh}}
+/* 権限と文書種別 */
+.search{grid-template-columns:minmax(0,1fr) auto auto auto}
+.search:not(:has(#t)){grid-template-columns:minmax(0,1fr) auto auto}
+@media (max-width:600px){.search{grid-template-columns:1fr 1fr!important}.search input[type=search]{grid-column:1/-1;border-bottom:1px solid var(--rule)}.search select{border-left:0}.search button{grid-column:1/-1;padding:9px}}
+.ft.doc{color:var(--warn)}
+.pill.lv{font-family:var(--font-body);font-size:11px;margin-left:4px}
+.pill.lv.admin{color:var(--red)}.pill.lv.user{color:var(--accent)}.pill.lv.guest{color:var(--ink-2)}

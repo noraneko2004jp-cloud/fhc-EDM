@@ -8,7 +8,7 @@ def backfill(apps, schema_editor):
     Drawing = apps.get_model("drawings", "Drawing")
     batch = []
     for d in Drawing.objects.select_related("file").iterator(chunk_size=2000):
-        classify.apply(d)
+        classify.apply(d, text="")
         batch.append(d)
         if len(batch) >= 2000:
             Drawing.objects.bulk_update(batch, ["model_family", "model_code", "series_prefix", "series"])

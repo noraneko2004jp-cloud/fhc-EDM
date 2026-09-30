@@ -19,8 +19,14 @@ class BomInline(admin.TabularInline):
 
 @admin.register(m.Drawing)
 class DrawingAdmin(admin.ModelAdmin):
-    list_display = ("drawing_no", "revision", "title", "source", "confidence", "needs_ocr")
-    list_filter = ("source", "needs_ocr")
+    list_display = ("drawing_no", "revision", "title", "doc_type", "doc_type_fixed", "source", "confidence", "needs_ocr")
+    list_filter = ("doc_type", "doc_type_fixed", "source", "needs_ocr")
+    list_editable = ("doc_type",)  # 自動判定の誤りをここで直せる。直したものは「手で確定」になり、自動判定で戻らない
+
+    def save_model(self, request, obj, form, change):
+        if change and "doc_type" in form.changed_data:
+            obj.doc_type_fixed = True
+        super().save_model(request, obj, form, change)
     search_fields = ("drawing_no", "title", "file__path")
     inlines = [BomInline]
     exclude = ("search_text",)
