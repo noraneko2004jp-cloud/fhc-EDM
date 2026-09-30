@@ -721,6 +721,16 @@ def _fill_by_template(spans):
         elif COL_ORDER[c0] == "qty" and not missing:
             for m, n in enumerate(gap):
                 spans[n][2] = f"qty{m + 2}"
+    # 名称と材質の間：見出しの読めない欄も員数の枝番の欄（「員」「数」が離れて書かれ、「数」の下だけ員数になるのを防ぐ）
+    labels = [sp[2] for sp in spans]
+    if "name" in labels and any(l and (l == "qty" or _QTYN.match(l)) for l in labels):
+        i = labels.index("name")
+        j = next((k for k in range(i + 1, len(spans)) if spans[k][2] and spans[k][2] != "qty"
+                  and not _QTYN.match(spans[k][2])), len(spans))
+        mid = list(range(i + 1, j))
+        if mid and all(spans[k][2] is None or spans[k][2] == "qty" or _QTYN.match(spans[k][2]) for k in mid):
+            for m, k in enumerate(mid):
+                spans[k][2] = "qty" if m == 0 else f"qty{m + 1}"
     if known:
         n_last, c_last = known[-1]
         for k in range(1, len(spans) - n_last):

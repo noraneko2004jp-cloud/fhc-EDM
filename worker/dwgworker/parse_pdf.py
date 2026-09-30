@@ -177,34 +177,63 @@ QTY_FILL_OK = 0.8  # 員数が入っている行がこの割合より少なけ�
 
 
 def _qty_rects(info) -> list[tuple]:
-    """員数の欄の、行ごとの範囲（ページ座標）。"""
+    """員数の欄の、行ごとの範囲（ページ座標 (x0, y0, x1, y1)）と文字の高さ。"""
     rects = []
     for t in info.get("qty") or []:
         h = t["h"]
         for y in t["rows"]:
-            rects.append((t["x0"] - h * 0.3, y - h * 0.5, t["x1"] + h * 0.3, y + h * 1.4))
+            rects.append(((t["x0"] - h * 0.3, y - h * 0.5, t["x1"] + h * 0.3, y + h * 1.4), h))
     return rects
 
 
+def _lone_ones(page, rect, h, dpi=300) -> list[dict]:
+    """欄の中にぽつんとある「1」を画像から探し、OCR の item の形で返す（Vision は細い「1」を 1 文字だけだと落とす）。"""
+    import numpy as np
+
+    W, H = page.rect.width, page.rect.height
+    x0, _, x1, _ = rect
+    y = rect[1] + h * 0.5  # 行の文字の下端
+    clip = pymupdf.Rect(max(0.0, x0), max(0.0, H - (y + h * 1.2)), min(W, x1), min(H, H - (y - h * 0.2)))
+    if clip.is_empty:
+        return []
+    pix = page.get_pixmap(dpi=dpi, clip=clip, colorspace=pymupdf.csGRAY, alpha=False)
+    g = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, 0]
+    s = pix.width / clip.width
+    out = []
+    for cx, top, bot in imagelines.lone_ones(g, h * s):
+        gx, gw = clip.x0 + cx / s - 1.0, 2.0
+        gy, gh = H - (clip.y0 + bot / s), (bot - top) / s
+        tok = {"text": "1", "x": gx, "y": gy, "w": gw, "h": gh}
+        out.append({**tok, "conf": 0.5, "tokens": [dict(tok)], "lone_one": True})
+    return out
+
+
 def _qty_reread(page, key, page_index, rects) -> list[dict]:
-    """員数の欄を行ごとに高い解像度で OCR し直す（結果は OCR の保存と同じ場所に保存）。"""
+    """員数の欄を行ごとに読み直す：高い解像度の OCR と、画像から「1」を探す。結果は OCR の保存と同じ場所に保存。"""
     import hashlib as _h
 
-    tag = _h.sha1(json.dumps([[round(v, 1) for v in r] for r in rects]).encode()).hexdigest()[:10]
+    tag = _h.sha1(json.dumps([[round(v, 1) for v in r] + [round(h, 2)] for r, h in rects]).encode()).hexdigest()[:10]
     f = _cache_file(key, page_index)
-    f = f.with_name(f.name.replace(".json.gz", f"-qty-{tag}.json.gz")) if f else None
+    f = f.with_name(f.name.replace(".json.gz", f"-qty2-{tag}.json.gz")) if f else None
     cached = _cache_load(f)
     if cached is not None:
         return cached["items"]
-    if not ocr_mac.available():
-        return []
     out = []
-    for r in rects:
+    for r, h in rects:
+        found = []
+        if ocr_mac.available():
+            try:
+                found = [i for i in ocr_mac.ocr_region(page, r) if (i.get("text") or "").strip()]
+            except Exception as e:  # noqa: BLE001
+                log.warning("員数の読み直しに失敗: %s", e)
         try:
-            out.extend(ocr_mac.ocr_region(page, r))
+            ones = _lone_ones(page, r, h)
         except Exception as e:  # noqa: BLE001
-            log.warning("員数の読み直しに失敗: %s", e)
-            return out
+            log.warning("員数の「1」の検出に失敗: %s", e)
+            ones = []
+        # OCR が同じ場所に何か読めていれば、そちらを使う
+        ones = [o for o in ones if not any(abs((i["x"] + i["w"] / 2) - o["x"] - 1) < h * 0.6 for i in found)]
+        out.extend(found + ones)
     _cache_save(f, out, [])
     return out
 

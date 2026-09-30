@@ -50,10 +50,25 @@ class QtyRereadTests(unittest.TestCase):
     def test_rects_and_merge(self):
         rects = parse_pdf._qty_rects({"qty": [{"x0": 100.0, "x1": 120.0, "h": 10.0, "rows": [50.0, 65.0]}]})
         self.assertEqual(len(rects), 2)
-        self.assertEqual(rects[0], (97.0, 45.0, 123.0, 64.0))
+        self.assertEqual(rects[0], ((97.0, 45.0, 123.0, 64.0), 10.0))
         old = [{"text": "68", "x": 104.0, "y": 64.0, "w": 8.0, "h": 8.0}]
         extra = [{"text": "68", "x": 104.5, "y": 64.5, "w": 7.0, "h": 7.0},   # もとの OCR と同じ位置 → 足さない
                  {"text": "1", "x": 108.0, "y": 49.0, "w": 3.0, "h": 8.0}]
         merged = parse_pdf._merge_extra(old, extra)
         self.assertEqual([m["text"] for m in merged], ["68", "1"])
         self.assertTrue(merged[1]["reread"])
+
+
+class LoneOneTests(unittest.TestCase):
+    def test_finds_thin_one_not_wide_digit(self):
+        import numpy as np
+        from dwgworker import imagelines
+
+        g = np.full((60, 200), 255, dtype=np.uint8)
+        g[:, 0:2] = g[:, 100:102] = g[:, 198:200] = 0   # 縦の罫線（3 つの枠の区切り）
+        g[55:57, :] = 0                                  # 横の罫線
+        g[12:50, 80:84] = 0                              # 1 つめの枠：細い縦棒＝「1」
+        g[12:50, 150:170] = 0                            # 2 つめの枠：幅のある字（「2」など）
+        found = imagelines.lone_ones(g, 44)
+        self.assertEqual(len(found), 1)
+        self.assertAlmostEqual(found[0][0], 82, delta=2)
