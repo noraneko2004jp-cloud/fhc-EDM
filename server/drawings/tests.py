@@ -209,6 +209,9 @@ class ClassifyTests(TestCase):
         self.assertEqual(model_of("図面/CAG-12/部品/UH-3600-01.dxf"), ("CAG", "CAG-12"))
         self.assertEqual(model_of("図面/部品/UH-3600-01.dxf"), ("_", "_"))  # 図番は型式にしない
         self.assertEqual(model_of("PDF/DXF-1/a.pdf"), ("_", "_"))
+        # OCR で空白だけ・文字以外が入っていても止まらない
+        for bad in (" ", "\u3000", 123, ["CAK"], None, ""):
+            self.assertEqual(model_of("a/b.pdf", {"model": bad}), ("_", "_"))
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

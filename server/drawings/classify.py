@@ -31,9 +31,9 @@ def model_of(path: str, attrs: dict | None = None) -> tuple[str, str]:
     探す順：表題欄・ファイル名の読み取り結果（attributes.model）→ ファイル名 → 深いフォルダから順にフォルダ名。"""
     attrs = attrs or {}
     p = PurePosixPath(path or "")
-    code = ""
-    if attrs.get("model"):
-        code = _model_in(attrs["model"]) or norm(attrs["model"]).split()[0]
+    raw = attrs.get("model")
+    raw = norm(raw) if isinstance(raw, str) else ""
+    code = (_model_in(raw) or (raw.split() or [""])[0]) if raw else ""
     if not code:
         stem = re.sub(r"^(DXF|DWG|JW)", "", norm(p.stem))  # 「dxfCAK-40A …」
         code = _model_in(stem)
@@ -82,6 +82,13 @@ def series_of(drawing_no: str) -> tuple[str, str]:
 
 
 def apply(drawing) -> None:
-    """Drawing に型式・系列を入れる（保存はしない）。"""
-    drawing.model_family, drawing.model_code = model_of(drawing.file.path, drawing.attributes)
-    drawing.series_prefix, drawing.series = series_of(drawing.drawing_no)
+    """Drawing に型式・系列を入れる（保存はしない）。分類で思わぬ値があっても保存や起動を止めない。"""
+    attrs = drawing.attributes if isinstance(drawing.attributes, dict) else {}
+    try:
+        drawing.model_family, drawing.model_code = model_of(drawing.file.path, attrs)
+    except Exception:  # noqa: BLE001
+        drawing.model_family, drawing.model_code = NONE, NONE
+    try:
+        drawing.series_prefix, drawing.series = series_of(drawing.drawing_no)
+    except Exception:  # noqa: BLE001
+        drawing.series_prefix, drawing.series = NONE, NONE
