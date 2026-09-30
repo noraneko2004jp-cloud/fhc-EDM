@@ -129,8 +129,9 @@ def _drawing(fields, source, conf, needs_ocr, attrs):
 
 def _bom(items, own_no, force, vlines=None):
     """部品表と注記の参照図番。スキャン PDF の部品表は試験中のため、BOM_PDF=1 か force のときだけ。"""
+    is_ocr = any(i.get("tokens") is not None for i in items)
     refs = {"note_refs": bom.note_refs([i["text"] for i in items], own_no),
-            "assembly_refs": bom.assembly_refs(items, own_no)}
+            "assembly_refs": bom.assembly_refs(items, own_no, ocr=is_ocr)}
     refs = {k: v for k, v in refs.items() if v}
     if not (CONFIG.bom_pdf or force):
         return [], refs

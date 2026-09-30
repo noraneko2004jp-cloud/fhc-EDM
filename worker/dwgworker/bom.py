@@ -235,16 +235,24 @@ def _label(bounds, cols, h):
     return [(a, b, c) for a, b, c, _ in spans]
 
 
-def _assign_by_lines(cells, spans, h):
+def _assign_by_lines(cells, spans, h, ocr=False):
     out = {}
+    item_left = next((a for a, b, lab in spans if lab == "item_no"), None)
     for c in cells:
         x = c["x0"] + h * 0.3
         col = next((lab for a, b, lab in spans if a <= x < b), None)
+        text = c["text"]
+        if ocr and (col == "item_no" or (col is None and item_left is not None and x < item_left)):
+            # 行番号：OCR の「I」「03」（〇印＋番号）など。行番号の左の欄（新旧の印）に入ったものも行番号に
+            num = ocr_item_no(text)
+            if _NUM.match(num) and len(_clean(text)) <= 3:
+                out["item_no"] = num
+            continue
         if col is None or (col not in STORED_COLS and not _QTYN.match(col)):
             continue
-        if col == "item_no" and not _NUM.match(_clean(c["text"])):
+        if col == "item_no" and not _NUM.match(_clean(text)):
             continue
-        out[col] = (out.get(col, "") + " " + c["text"]).strip()
+        out[col] = (out.get(col, "") + " " + text).strip()
     return out
 
 
@@ -424,6 +432,28 @@ def _table(items, anchor, others, vlines):
     return best
 
 
+_ITEM_OCR = str.maketrans({"I": "1", "l": "1", "|": "1", "!": "1", "O": "0", "o": "0"})
+
+
+def ocr_item_no(text: str) -> str:
+    """OCR の行番号：「I」「|」→ 1、「O」→ 0、先頭の 0（行番号の左の〇印）を外す。"""
+    t = _clean(text).translate(_ITEM_OCR)
+    t = re.sub(r"\D", "", t)
+    return t.lstrip("0") or ("0" if t else "")
+
+
+def ocr_code(code: str) -> str:
+    """OCR の品番・図番の読み違いを直す。
+    ・点線を「.」「,」と読んだもの：英数字の間の区切りが 2 つ以上なら詰める（0.0.1.66.082.5.0 → 0016608250）
+    ・英字の間の「1」は I（HCZ1D90061 → HCZID90061）、英字 4 文字の直後で数字の前の「O」は 0（HUXPO10143 → HUXP010143）"""
+    c = _clean(code).upper()
+    if re.fullmatch(r"[A-Z0-9.,]+", c) and len(re.findall(r"[.,]", c)) >= 2:
+        c = re.sub(r"[.,]", "", c)
+    c = re.sub(r"(?<=[A-Z])1(?=[A-Z])", "I", c)
+    c = re.sub(r"^([A-Z]{4})O(?=\d)", r"\g<1>0", c)
+    return c
+
+
 def cells_from_ocr(items, vlines=()) -> list[dict]:
     """OCR の結果（1 つのまとまりに隣の欄の文字まで入っていることがある）を、欄ごとの文字に分け直す。
     語（tokens）ごとの位置を使い、近い語はつなげるが、罫線をまたいではつなげない。tokens がない item はそのまま。"""
@@ -445,7 +475,7 @@ def cells_from_ocr(items, vlines=()) -> list[dict]:
                     group["x1"] = tk["x"] + tk["w"]
                     continue
                 out.append({k: v for k, v in group.items() if k != "x1"})
-            group = {"text": tk["text"], "x": tk["x"], "y": tk["y"], "h": h, "x1": tk["x"] + tk["w"]}
+            group = {"text": tk["text"], "x": tk["x"], "y": tk["y"], "h": h, "x1": tk["x"] + tk["w"], "ocr": True}
         if group is not None:
             out.append({k: v for k, v in group.items() if k != "x1"})
     return out
@@ -497,14 +527,23 @@ def _join_vertical(vlines, tol_x, gap):
     return [tuple(m) for m in out]
 
 
+def _mode(values, tol):
+    """いちばん多く集まっている値（tol 以内をまとめて数える。同数なら小さい方）。"""
+    vs = sorted(values)
+    return max(vs, key=lambda v: (sum(1 for x in vs if abs(x - v) <= tol), -v)) if vs else None
+
+
 def _grid_tables(items, vlines):
-    """見出しの文字が読めなくても、部品表の罫線の格子から表を読む（スキャン図面向け）。"""
+    """見出しの文字が読めなくても、部品表の罫線の格子から表を読む（スキャン図面向け）。
+    2026-09-30 実スキャン（HULP003160・HUXP010143・HDBY003920）で確認した様式に合わせる：
+      ・見出しは 2 段。下の段（図番又は品番・名称/規格・員数・材質・材料寸法）まで下りる線と、
+        上の段から始まる線（員数の枝番の区切り、厚さ・幅・長さの区切り、質量・計）がある
+      ・質量・計の区切りはかすれて見えないことがある"""
     if not items or not vlines:
         return []
     h = statistics.median(_h(i) for i in items)
     vlines = _join_vertical(vlines, h * 0.25, h * 1.5)
     longs = sorted([v for v in vlines if v[2] - v[1] >= h * 8], key=lambda v: v[2])
-    # 上端のそろった縦の線のまとまり＝表
     groups, cur = [], []
     for v in longs:
         if cur and v[2] - cur[-1][2] > h * 1.2:
@@ -518,70 +557,43 @@ def _grid_tables(items, vlines):
         xs = sorted(v[0] for v in g)
         if len(g) < 6 or xs[-1] - xs[0] < h * 40:
             continue
-        # 表の下端（見出しの下の線）：いちばん多くの線がそろって終わる高さ。表の外枠は表題欄まで下りていることがある
-        bots = sorted(v[1] for v in g)
-        bottom = max(bots, key=lambda b: (sum(1 for x in bots if abs(x - b) <= h * 1.5), -b))
+        bottom = _mode([v[1] for v in g], h * 0.6)              # 表の下端（見出しの下の線）
         top = statistics.median(v[2] for v in g)
-        major = sorted(v for v in g if v[1] <= bottom + h * 1.5)        # 見出しまで下りている線＝列の境目
-        minor = [v for v in g if v[1] > bottom + h * 1.5]              # 見出しの上から始まる線＝欄の中の区切り
-        minor_bottoms = [v[1] for v in minor if v[1] <= bottom + h * 4]
-        head_top = statistics.median(minor_bottoms) if minor_bottoms else bottom + h * 2.2
+        inner = [v for v in g if v[1] > bottom + h * 0.6]       # 見出しの上の段から始まる線
+        near = [v[1] for v in inner if v[1] <= bottom + h * 3]
+        head_top = _mode(near, h * 0.4) if near else bottom + h * 1.5
+        cols_lines = [v for v in g if v[1] <= head_top + h * 0.6]  # 見出しの上の段から下へ伸びる線は、どれも列の区切り
         bounds = []
-        for x in sorted(v[0] for v in major):
+        for x in sorted(v[0] for v in cols_lines):
             if not bounds or x - bounds[-1] > h * 0.6:
                 bounds.append(x)
         if len(bounds) < 5:
             continue
-        # 表の右端：図面の外枠と共通で、上の方まで伸びている線のことがある（上端がそろわないので別のまとまりになる）
         edge = [v[0] for v in vlines if bounds[-1] + h * 1.5 < v[0] < bounds[-1] + h * 20
                 and v[1] <= head_top and v[2] >= top - h]
         if edge:
             bounds.append(min(edge))
         spans = [[a, b, None, 0.0] for a, b in zip(bounds, bounds[1:])]
-        head = [i for i in items if bottom - h * 0.5 <= i["y"] <= head_top + h * 0.5 and bounds[0] <= i["x"] <= bounds[-1]]
-        for s in spans:
-            text = " ".join(i["text"] for i in sorted(head, key=lambda i: i["x"]) if s[0] <= i["x"] + _h(i) * 0.5 < s[1])
+        head = [i for i in items if bottom - h * 0.5 <= i["y"] <= head_top + h * 0.3 and bounds[0] <= i["x"] <= bounds[-1]]
+        for sp in spans:
+            text = " ".join(i["text"] for i in sorted(head, key=lambda i: i["x"]) if sp[0] <= i["x"] + _h(i) * 0.5 < sp[1])
             score, col = _fuzzy_col(text)
             if col and col in COL_ORDER:
-                s[2], s[3] = col, score
-        # 同じ列が 2 か所なら点数の高い方
+                sp[2], sp[3] = col, score
         for col in COL_ORDER:
-            hit = [s for s in spans if s[2] == col]
-            for s in sorted(hit, key=lambda s: -s[3])[1:]:
-                s[2] = None
-        # 様式の列の順番で、読めなかった見出しを埋める（前後の列が分かっていて、間の数が合うとき）
-        known = [(n, COL_ORDER.index(s[2])) for n, s in enumerate(spans) if s[2]]
-        for (n0, c0), (n1, c1) in zip(known, known[1:]):
-            if n1 - n0 == c1 - c0 and n1 - n0 > 1:
-                for k in range(1, n1 - n0):
-                    spans[n0 + k][2] = COL_ORDER[c0 + k]
-        if known:
-            n_last, c_last = known[-1]
-            for k in range(1, len(spans) - n_last):
-                if c_last + k < len(COL_ORDER) and spans[n_last + k][2] is None:
-                    spans[n_last + k][2] = COL_ORDER[c_last + k]
-        labels = [s[2] for s in spans]
+            hit = [sp for sp in spans if sp[2] == col]
+            for sp in sorted(hit, key=lambda sp: -sp[3])[1:]:
+                sp[2] = None
+        _fill_by_template(spans)
+        labels = [sp[2] for sp in spans]
         if "part_no" not in labels:
             continue
-        if "item_no" not in labels:
-            i = labels.index("part_no")
-            if i > 0 and spans[i - 1][2] is None:
-                spans[i - 1][2] = "item_no"
-        # 員数の欄の中の区切り（枝番ごとの員数）
-        final = []
-        for a, b, lab, _ in spans:
-            subs = sorted(v[0] for v in minor if a + h * 0.5 < v[0] < b - h * 0.5)
-            if lab == "qty" and subs:
-                edges = [a] + subs + [b]
-                for n, (p, q) in enumerate(zip(edges, edges[1:])):
-                    final.append((p, q, "qty" if n == 0 else f"qty{n + 1}"))
-            else:
-                final.append((a, b, lab))
+        final = _split_length(spans)
         x_lo, x_hi = bounds[0] - h * 0.5, bounds[-1] + h * 0.5
         sub = [i for i in items if x_lo <= i["x"] <= x_hi and head_top + h * 0.3 < i["y"] < top]
         found = []
         for ln in reversed(_lines(sub, 0.8)):  # 見出しに近い方（下）から
-            row = _fix_lead_num(_assign_by_lines(_cells(ln["items"], merge=False), final, h))
+            row = _fix_lead_num(_assign_by_lines(_cells(ln["items"], merge=False), final, h, ocr=True))
             kind = _kind(row)
             if kind not in ("empty", "header", "other"):
                 found.append({**row, "_y": ln["y"], "_kind": kind})
@@ -591,10 +603,64 @@ def _grid_tables(items, vlines):
     return tables
 
 
+def _fill_by_template(spans):
+    """読めなかった見出しを、様式の列の順番（行番号・品番・名称・員数・材質・厚さ・幅・長さ・質量・計）で埋める。"""
+    known = [(n, COL_ORDER.index(sp[2])) for n, sp in enumerate(spans) if sp[2]]
+    for (n0, c0), (n1, c1) in zip(known, known[1:]):
+        gap = list(range(n0 + 1, n1))
+        missing = COL_ORDER[c0 + 1:c1]
+        if not gap:
+            continue
+        if len(gap) == len(missing):
+            for n, col in zip(gap, missing):
+                spans[n][2] = col
+        elif COL_ORDER[c0] == "part_no" and not missing:
+            for n in gap:
+                spans[n][2] = "part_no"  # 品番の欄の中の区切り
+        elif "qty" in missing and len(gap) > len(missing):
+            # 員数の欄が枝番ごとに分かれている：員数より前の列は左から、後ろの列は右から埋め、
+            # 残りの真ん中を 員数・qty2・qty3… にする
+            qi = missing.index("qty")
+            pre, post = missing[:qi], missing[qi + 1:]
+            for n, col in zip(gap[:len(pre)], pre):
+                spans[n][2] = col
+            for n, col in zip(gap[len(gap) - len(post):], post):
+                spans[n][2] = col
+            middle = gap[len(pre):len(gap) - len(post)]
+            for m, n in enumerate(middle):
+                spans[n][2] = "qty" if m == 0 else f"qty{m + 1}"
+        elif COL_ORDER[c0] == "qty" and not missing:
+            for m, n in enumerate(gap):
+                spans[n][2] = f"qty{m + 2}"
+    if known:
+        n_last, c_last = known[-1]
+        for k in range(1, len(spans) - n_last):
+            if c_last + k < len(COL_ORDER) and spans[n_last + k][2] is None:
+                spans[n_last + k][2] = COL_ORDER[c_last + k]
+    labels = [sp[2] for sp in spans]
+    if "item_no" not in labels and "part_no" in labels:
+        i = labels.index("part_no")
+        if i > 0 and spans[i - 1][2] is None:
+            spans[i - 1][2] = "item_no"
+
+
+def _split_length(spans):
+    """質量・計の区切りが見えず、長さの欄が右端まで広がっているときは、厚さの欄と同じ幅で切る（残りは質量）。"""
+    out = [(a, b, lab) for a, b, lab, _ in spans]
+    th = next(((a, b) for a, b, lab in out if lab == "thickness"), None)
+    for n, (a, b, lab) in enumerate(out):
+        if lab == "length" and th and (b - a) > (th[1] - th[0]) * 1.6:
+            w = (th[1] - th[0]) * 0.9  # 質量の数字は欄の左端ぎりぎりから書かれていることがあるので少し手前で切る
+            out[n:n + 1] = [(a, a + w, "length"), (a + w, b, "weight")]
+            break
+    return out
+
+
 def extract(items, vlines=None) -> list[dict]:
     """部品表の行のリストを返す。見つからなければ []。図面の中に表が複数（続きの表）あれば、行番号順にまとめる。
     行: {item_no, part_no, name, qty, material, thickness, width, length, note, ref_drawing_no, raw_text, confidence}"""
     items = [i for i in items if (i.get("text") or "").strip()]
+    is_ocr = any(i.get("ocr") for i in items)
     anchors = []
     for it in items:
         k = _key(it["text"])
@@ -611,6 +677,8 @@ def extract(items, vlines=None) -> list[dict]:
         for r in rows:
             # OCR が品番の欄の点線を「.」「,」と読んだもの（HC.Z.1.D.9.0.0.2.4）を詰める
             part = titleblock.compact_codes(_clean(r.get("part_no")))
+            if is_ocr:
+                part = ocr_code(part)
             item_no = _clean(r.get("item_no"))
             subs = sorted((k for k in r if _QTYN.match(k)), key=lambda k: int(k[3:]))
             if subs:  # 枝番ごとの員数
@@ -658,9 +726,10 @@ def note_refs(lines_text: list[str], own_no: str = "") -> list[str]:
     return out[:20]
 
 
-def assembly_refs(items, own_no: str = "") -> list[str]:
+def assembly_refs(items, own_no: str = "", ocr: bool = False) -> list[str]:
     """表題欄の「組立図番」欄に書かれた親の組立図の図番（この部品を使っている図面）。
-    欄の名前の真上・右隣にある図番を拾う。"""
+    欄の名前の真上・右隣にある図番を拾う。
+    ocr：OCR の読み違いを直す（点線の「.」、O と 0、図番の後ろの員数「1」がくっついた 11 文字）。"""
     labels = [i for i in items if "組立図番" in _key(i.get("text"))]
     out = []
     for lab in labels:
@@ -671,7 +740,12 @@ def assembly_refs(items, own_no: str = "") -> list[str]:
                 continue
             dy = it["y"] - lab["y"]
             if -h * 0.6 <= dy <= h * 6:
-                for c in titleblock.find_codes(it["text"]):
+                text = it["text"]
+                if ocr:
+                    text = " ".join(ocr_code(w) for w in _clean(text).split())
+                for c in titleblock.find_codes(text):
+                    if ocr and re.fullmatch(r"[A-Z]{2,5}\d{7,9}", c) and len(c) == 11:
+                        c = c[:-1]  # 図番（10 文字）の後ろに員数がくっついたもの
                     if c != own_no and c not in out:
                         out.append(c)
     return out[:10]

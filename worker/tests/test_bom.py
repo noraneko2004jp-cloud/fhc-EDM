@@ -299,3 +299,56 @@ class BomOcrTests(unittest.TestCase):
         ls = imagelines.vertical_lines(img, 1190.55, 841.89)
         self.assertEqual([round(x) for x, _, _ in ls], [240, 481])
         self.assertAlmostEqual(ls[0][2] - ls[0][1], 240.0, delta=1)
+
+
+def scan_drawing():
+    """スキャン図面（実スキャン 3 件で確かめた配置、文字は架空）：OCR の結果（tokens 付き）と、画像から見つけた縦の線。
+    見出しは OCR の読み違いあり（図番又は品番 → 図番双は&番、員・数は枝番の欄に分かれる、名称/規格 → 名 株 規 格）。"""
+    H = 8.6
+    def ocr(text, x, y):
+        return {"text": text, "x": x, "y": y, "h": H, "tokens": [{"text": text, "x": x, "y": y, "w": len(text) * 5.0, "h": H}]}
+    items = [
+        ocr("1見出", 54, 120.9), ocr("特", 237, 121), ocr("記", 307, 119.8), ocr("厚さ", 452, 120.9), ocr("幅（直径）", 477, 119.3),
+        ocr("1長さ「質量｜計", 512, 119.7), ocr("｜番号", 55, 111.2), ocr("図番双は&番", 95, 114.9), ocr("名", 237, 111.2),
+        ocr("株", 253, 110), ocr("規", 290, 111.2), ocr("格", 308, 111.2), ocr("員", 375, 108.8), ocr("数", 404, 108.8),
+        ocr("材質", 431, 114.9), ocr("材", 472, 108.8), ocr("料", 494, 108.8), ocr("寸", 517, 111.2), ocr("法", 539, 110),
+        # 行（下から）：行番号の「I」「03」、品番の点線、質量は右端
+        ocr("I", 52, 130.9), ocr("ZZ.AB.1.0.3.1.4.0", 67, 128.5), ocr("テストパネル", 186, 128.3), ocr("40.75", 540, 127.1),
+        ocr("2", 58, 147), ocr("ZZ1D90061", 67, 143.3), ocr("テストワク/20cm", 187, 145.4), ocr("12.25", 540, 142.8),
+        ocr("03", 51, 162.7), ocr("ZZAB.50.0.040", 66, 159.1), ocr("テストダイ", 186, 161.1),
+        ocr("4", 58, 178.8), ocr("0.0.1.66.082.5.0", 67, 176.2), ocr("テストボルト/M8x25", 185, 175.9), ocr("6", 375, 178.5),
+        ocr("C02", 432, 176), ocr("160", 452, 176), ocr("7900", 478, 176), ocr("1440", 514, 176),
+        # 表の上の注記（表の外）
+        ocr("注記：テスト用の注記。", 214, 301.9),
+    ]
+    major = [49.9, 55.9, 67.8, 186.5, 364.8, 430.0, 447.8]         # 見出しの下の段まで下りる線
+    upper = [382.4, 394.4, 406.3, 418.1, 477.5, 513.2]             # 見出しの上の段から始まる線（員数の枝番、寸法の区切り）
+    vlines = [(x, 109.4, 289.6) for x in major] + [(x, 119.97, 289.1) for x in upper]
+    vlines += [(127.3, 130.8, 289.6), (571.2, 20.4, 744.8)]        # 品番の欄の中の線、図面の外枠（表の右端）
+    return items, vlines
+
+
+class BomScanTests(unittest.TestCase):
+    def test_scan_grid_with_misread_header(self):
+        items, vlines = scan_drawing()
+        rows = bom.extract(bom.cells_from_ocr(items, vlines), vlines)
+        got = [(r["item_no"], r["part_no"], r["ref_drawing_no"]) for r in rows]
+        self.assertEqual(got, [("1", "ZZAB103140", "ZZAB103140"), ("2", "ZZID90061", "ZZID90061"),
+                               ("3", "ZZAB500040", "ZZAB500040"), ("4", "0016608250", "0016608250")])
+        r4 = rows[3]
+        self.assertEqual((r4["name"], r4["qty"], r4["material"], r4["thickness"], r4["width"], r4["length"]),
+                         ("テストボルト/M8x25", "6", "C02", "160", "7900", "1440"))
+        self.assertEqual(rows[0]["length"], "")  # 右端の質量は長さに入れない
+        self.assertFalse(any("注記" in r["raw_text"] for r in rows))
+
+    def test_ocr_code_fixes(self):
+        self.assertEqual(bom.ocr_code("HC.Z.1.D.9.0.0.6.1"), "HCZID90061")
+        self.assertEqual(bom.ocr_code("0031008.0.0.1"), "0031008001")
+        self.assertEqual(bom.ocr_code("HUXPO10143"), "HUXP010143")
+        self.assertEqual(bom.ocr_code("0277-NO.510X18W"), "0277-NO.510X18W")  # 区切りが 1 つなら触らない
+        self.assertEqual([bom.ocr_item_no(x) for x in ("I", "03", "|", "12")], ["1", "3", "1", "12"])
+
+    def test_scan_assembly_ref(self):
+        items = [{"text": "H.U.L.0.0,1.5,0,9.01", "x": 45.2, "y": 52.5, "h": 8.6},
+                 {"text": "組立図番", "x": 52.5, "y": 42.7, "h": 8.6}, {"text": "員数", "x": 97.8, "y": 42.7, "h": 8.6}]
+        self.assertEqual(bom.assembly_refs(items, "HULP003160", ocr=True), ["HUL0015090"])
