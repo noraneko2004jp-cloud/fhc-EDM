@@ -70,6 +70,9 @@ class Config:
     thumb_width: int = int(os.environ.get("THUMB_WIDTH", "1200"))
     # 部品表の読み取り。DXF は常に行う。スキャン PDF（OCR）は精度を確かめてから BOM_PDF=1 で有効にする
     bom_pdf: bool = os.environ.get("BOM_PDF", "0").strip() in ("1", "true", "yes")
+    # OCR の結果（語の位置・罫線）の保存先。同じ PDF をもう一度解析するとき OCR を省く（部品表の読み方を直した後の
+    # やり直しが数日→数十分になる）。空にすると保存しない
+    ocr_cache_dir: str = os.environ.get("OCR_CACHE_DIR", str(Path(__file__).resolve().parent.parent / "cache" / "ocr"))
 
 
 CONFIG = Config()

@@ -458,6 +458,9 @@ def ocr_item_no(text: str) -> str:
     return t.lstrip("0") or ("0" if t else "")
 
 
+_CODE10 = re.compile(r"[A-Z]{2,4}\d{6,8}|\d{10}")
+
+
 def ocr_code(code: str) -> str:
     """OCR の品番・図番の読み違いを直す。
     ・点線を「.」「,」と読んだもの：英数字の間の区切りが 2 つ以上なら詰める（0.0.1.66.082.5.0 → 0016608250）
@@ -466,6 +469,13 @@ def ocr_code(code: str) -> str:
     if re.fullmatch(r"[A-Z0-9.,]+", c) and len(re.findall(r"[.,]", c)) >= 2:
         c = re.sub(r"[.,]", "", c)
     c = re.sub(r"(?<=[A-Z])1(?=[A-Z])", "I", c)
+    if not _CODE10.fullmatch(c):
+        # 点線の上の品番で「.」「,」「 」が 1 つ入ったもの（HU99003.060、HUXP.O 10.1.53）：詰めると
+        # 10 桁の品番の形になるときだけ詰める
+        d = re.sub(r"[.,\s]", "", c)
+        d = re.sub(r"^([A-Z]{4})O(?=\d)", r"\g<1>0", d)
+        if d != c and len(d) == 10 and _CODE10.fullmatch(d):
+            c = d
     if re.fullmatch(r"[A-Z0-9]{6,}[|/.,]+", c):  # 罫線や汚れを末尾の「|」「/」と読んだもの
         c = re.sub(r"[|/.,]+$", "", c)
     c = re.sub(r"^([A-Z]{4})O(?=\d)", r"\g<1>0", c)

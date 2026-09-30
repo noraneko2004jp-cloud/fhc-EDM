@@ -6,8 +6,12 @@ Mac mini では macOS Vision で OCR する。
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import logging
 import time
+from pathlib import Path
 
 import pymupdf
 
@@ -93,8 +97,43 @@ def _vector_vlines(page) -> list[tuple[float, float, float]]:
     return out
 
 
-def _read_page(page, path, i, budget, want_lines=False) -> dict:
-    """want_lines：部品表を読むとき、罫線（縦の線）も集める。"""
+OCR_CACHE_VERSION = 1
+
+
+def _cache_file(key: str | None, i: int) -> Path | None:
+    if not key or not CONFIG.ocr_cache_dir:
+        return None
+    return Path(CONFIG.ocr_cache_dir) / key[:2] / f"{key}-p{i + 1}-{CONFIG.ocr_dpi}.json.gz"
+
+
+def _cache_load(f: Path | None):
+    if f is None or not f.exists():
+        return None
+    try:
+        d = json.loads(gzip.decompress(f.read_bytes()))
+        if d.get("v") == OCR_CACHE_VERSION:
+            return d
+    except Exception as e:  # noqa: BLE001  壊れた保存は無視して OCR し直す
+        log.warning("OCR の保存を読めません %s: %s", f, e)
+    return None
+
+
+def _cache_save(f: Path | None, items, vlines) -> None:
+    if f is None:
+        return
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_bytes(gzip.compress(json.dumps({"v": OCR_CACHE_VERSION, "items": items, "vlines": vlines},
+                                                 ensure_ascii=False).encode()))
+        tmp.replace(f)
+    except Exception as e:  # noqa: BLE001  保存できなくても解析は続ける
+        log.warning("OCR の結果を保存できません %s: %s", f, e)
+
+
+def _read_page(page, path, i, budget, want_lines=False, key=None) -> dict:
+    """want_lines：部品表を読むとき、罫線（縦の線）も集める。
+    key：PDF の中身のハッシュ。OCR の結果を保存・再利用する（OCR したページは罫線も一緒に保存する）。"""
     text = page.get_text("text")
     source, secs = "text", 0.0
     vlines = []
@@ -102,18 +141,25 @@ def _read_page(page, path, i, budget, want_lines=False) -> dict:
     if not scanned and want_lines:
         vlines = _vector_vlines(page)
     items = _text_items(page, vlines)
-    if scanned and CONFIG.ocr_enabled and ocr_mac.available() and budget > 0:
-        t0 = time.time()
-        try:
-            pix = ocr_mac.render(page, dpi=CONFIG.ocr_dpi)
-            items = ocr_mac.ocr_page(page, pix=pix)
+    if scanned and CONFIG.ocr_enabled and budget > 0:
+        cf = _cache_file(key, i)
+        cached = _cache_load(cf)
+        if cached is not None:
+            items, vlines = cached["items"], [tuple(v) for v in cached["vlines"]]
             text = "\n".join(ocr_mac.lines(items))
             source = "ocr"
-            if want_lines:
+        elif ocr_mac.available():
+            t0 = time.time()
+            try:
+                pix = ocr_mac.render(page, dpi=CONFIG.ocr_dpi)
+                items = ocr_mac.ocr_page(page, pix=pix)
+                text = "\n".join(ocr_mac.lines(items))
+                source = "ocr"
                 vlines = imagelines.from_pixmap(pix, page.rect.width, page.rect.height)
-        except Exception as e:
-            log.warning("OCR に失敗 %s p%d: %s", path, i + 1, e)
-        secs = time.time() - t0
+                _cache_save(cf, items, vlines)
+            except Exception as e:
+                log.warning("OCR に失敗 %s p%d: %s", path, i + 1, e)
+            secs = time.time() - t0
     text = titleblock.compact_codes(titleblock.norm(text))
     codes = titleblock.find_codes(text)
     if codes:
@@ -148,8 +194,9 @@ def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = 
     doc = pymupdf.open(stream=data, filetype="pdf")
     pages = []
     ocr_left = CONFIG.ocr_max_pages
+    key = hashlib.sha256(data).hexdigest()
     for i, page in enumerate(doc):
-        p = _read_page(page, path, i, ocr_left, want_lines=CONFIG.bom_pdf or force_bom)
+        p = _read_page(page, path, i, ocr_left, want_lines=CONFIG.bom_pdf or force_bom, key=key)
         if p["text_source"] == "ocr":
             ocr_left -= 1
         pages.append(p)
