@@ -83,17 +83,24 @@ def series_of(drawing_no: str) -> tuple[str, str]:
 
 # ---- 文書種別 ----
 # ゲスト（Guest グループ）は DRAWING だけ見られる。判定に迷うものは OTHER にして、ゲストには見せない（安全側）。
-DRAWING, SITE, CONTRACT, APPLICATION, OTHER = "drawing", "site", "contract", "application", "other"
+DRAWING, SITE, CONTRACT, APPLICATION, GENERAL, OTHER = "drawing", "site", "contract", "application", "general", "other"
 DOC_TYPES = [(DRAWING, "製品図面"), (SITE, "敷地・土地図"), (CONTRACT, "契約書・見積"), (APPLICATION, "申請書類"),
-             (OTHER, "その他")]
+             (GENERAL, "一般書類"), (OTHER, "その他")]
 GUEST_TYPES = {DRAWING}
 # 言葉は NFKC＋大文字で比べる。先に書いた種別ほど優先（契約書に土地の話が出てくることが多いため）
 TYPE_WORDS = {
     CONTRACT: ["契約書", "契約", "見積書", "見積", "請求書", "注文書", "発注書", "注文請書", "納品書", "領収書", "約款", "覚書",
-               "契約金額", "請負", "収入印紙", "御中"],
+               "契約金額", "請負", "収入印紙", "御中", "発注伝票", "発注", "受注", "注文"],
     APPLICATION: ["確認申請", "建築確認", "申請書", "申請図書", "届出", "許可申請", "確認済証", "検査済証", "設置届", "申請"],
     SITE: ["公図", "地番", "地積", "測量", "登記", "敷地", "土地", "案内図", "現況図", "求積", "境界", "住宅地図", "付近見取図"],
+    # 2026-09-30 実データ確認：工程表・稟議書（OCR で「凛議書」）・理由書・部品寸法表など
+    GENERAL: ["工程表", "稟議書", "稟議", "凛議", "理由書", "議事録", "報告書", "打合せ", "打合わせ", "依頼書", "送付状", "連絡書",
+              "寸法表", "一覧表", "説明書", "取扱説明", "通知書", "回覧"],
 }
+# 書類が多いフォルダ。ここでは図番らしい文字があるだけでは製品図面にしない（表題欄の語もそろったときだけ）
+DOCUMENT_FOLDERS = ["物件対応ファイル他"]
+# スキャナーが付けた日時だけのファイル名（例 20241127081623360.pdf）。名前から手がかりが取れない
+_SCANNER_NAME = re.compile(r"^\d{12,}$")
 # ファイル名にあれば製品図面とみなす語（フォルダ名は「図面 DXF…」のように広すぎるので見ない）
 DRAWING_NAME_WORDS = ["図面一式", "組立図", "部品図", "製作図", "詳細図", "姿図", "展開図", "平面図", "立面図", "断面図", "構造図"]
 # 表題欄にある語（本文にこれが 2 つ以上あれば図面らしい）
@@ -110,15 +117,19 @@ def _hits(text, words):
     return len(_found(text, words))
 
 
-def explain(path, drawing_no="", source="", confidence=0.0, kind="", text="") -> tuple[str, str]:
+def explain(path, drawing_no="", source="", confidence=0.0, kind="", text="", attrs=None) -> tuple[str, str]:
     """(文書種別, 判定理由) を返す。順番：
-    1. ファイル名の言葉（契約・申請・敷地など）
-    2. フォルダ名の言葉
-    3. ファイル名の図面らしい語、表題欄・ファイル名の規則で読めた図番（信頼度 0.75 以上）→ 製品図面
-    4. 本文の言葉（同じ種別の別々の語が 2 つ以上）
-    5. DXF、図番あり、本文に表題欄の語が 2 つ以上 → 製品図面
-    6. それ以外 → その他
+    1. ファイル名の言葉（契約・申請・敷地・一般書類）→ 2. フォルダ名の言葉
+    3. ファイル名の図面らしい語（図面一式・組立図など）→ 製品図面
+    4. 複数ページの PDF で、図面一式としてページごとに分かれていないもの → 書類（本文の語で種別、なければその他）
+       （2026-09-30 実データ：複数ページの PDF はほぼ一般書類）
+    5. 書類が多いフォルダ（物件対応ファイル他）：本文の語が 1 つでもあれば書類。図番＋表題欄の語がそろえば製品図面。他はその他
+    6. 表題欄・ファイル名の規則で読めた図番（信頼度 0.75 以上）→ 製品図面
+    7. 本文の言葉（同じ種別の別々の語が 2 つ以上）
+    8. DXF、図番あり、本文に表題欄の語が 2 つ以上 → 製品図面
+    9. それ以外 → その他
     """
+    attrs = attrs if isinstance(attrs, dict) else {}
     p = PurePosixPath(path or "")
     name = norm(p.stem)
     parts = [norm(x) for x in p.parts[:-1]]
@@ -134,18 +145,33 @@ def explain(path, drawing_no="", source="", confidence=0.0, kind="", text="") ->
     w = next((w for w in DRAWING_NAME_WORDS if w in name), None)
     if w:
         return DRAWING, f"ファイル名「{w}」"
-    if drawing_no and (source in ("attrib", "filename") or (confidence or 0) >= 0.75):
-        return DRAWING, "図番（表題欄・ファイル名）"
     body = norm((text or "")[:6000])
     found = {t: _found(body, words) for t, words in TYPE_WORDS.items()}
     best = max(found, key=lambda t: len(found[t]))
+    tb_words = _hits(body, TITLEBLOCK_WORDS)
+    try:
+        pages = int(attrs.get("pages") or 1)
+    except (TypeError, ValueError):
+        pages = 1
+    if (kind or "").lower() == "pdf" and pages >= 2 and "page" not in attrs:
+        if found[best]:
+            return best, f"複数ページのPDF・本文「{'・'.join(found[best][:3])}」"
+        return OTHER, "複数ページのPDF（図面一式として分かれていない）"
+    if any(f in part for f in DOCUMENT_FOLDERS for part in parts):
+        if found[best]:
+            return best, f"書類の多いフォルダ・本文「{'・'.join(found[best][:3])}」"
+        if drawing_no and tb_words >= 2:
+            return DRAWING, "書類の多いフォルダ・図番と表題欄の語"
+        return OTHER, "書類の多いフォルダ・図面の決め手なし" + ("（スキャナー名）" if _SCANNER_NAME.match(name) else "")
+    if drawing_no and (source in ("attrib", "filename") or (confidence or 0) >= 0.75):
+        return DRAWING, "図番（表題欄・ファイル名）"
     if len(found[best]) >= 2:
         return best, "本文「" + "・".join(found[best][:3]) + "」"
     if (kind or "").lower() == "dxf":
         return DRAWING, "DXF"
     if drawing_no:
         return DRAWING, "図番（信頼度低）"
-    if _hits(body, TITLEBLOCK_WORDS) >= 2:
+    if tb_words >= 2:
         return DRAWING, "本文に表題欄の語"
     return OTHER, "手がかりなし" if body.strip() else "本文なし（OCR未実施など）"
 
@@ -166,7 +192,7 @@ def apply(drawing, text=None) -> None:
     try:
         if not getattr(drawing, "doc_type_fixed", False):
             drawing.doc_type = doc_type_of(drawing.file.path, drawing.drawing_no, drawing.source, drawing.confidence,
-                                           drawing.file.kind, text)
+                                           drawing.file.kind, text, attrs)
     except Exception:  # noqa: BLE001
         drawing.doc_type = OTHER
     try:

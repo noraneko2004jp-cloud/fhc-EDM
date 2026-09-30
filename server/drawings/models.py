@@ -65,7 +65,7 @@ class Drawing(models.Model):
     search_text = models.TextField(blank=True)
     doc_type = models.CharField("文書種別", max_length=16, default="other", db_index=True,
                                 choices=[("drawing", "製品図面"), ("site", "敷地・土地図"), ("contract", "契約書・見積"),
-                                         ("application", "申請書類"), ("other", "その他")],
+                                         ("application", "申請書類"), ("general", "一般書類"), ("other", "その他")],
                                 help_text="classify.py で自動判定。ゲストは「製品図面」だけ見られる")
     doc_type_fixed = models.BooleanField("種別を手で確定", default=False,
                                          help_text="管理画面で種別を直すと付く。付いていると自動判定で上書きしない")

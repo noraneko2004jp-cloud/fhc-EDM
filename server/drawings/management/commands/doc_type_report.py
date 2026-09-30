@@ -31,7 +31,7 @@ class Command(BaseCommand):
                     texts[did].append((text or "")[:3000])
             for d in Drawing.objects.filter(id__in=chunk).select_related("file"):
                 t, why = classify.explain(d.file.path, d.drawing_no, d.source, d.confidence, d.file.kind,
-                                          "\n".join(texts.get(d.id, [])))
+                                          "\n".join(texts.get(d.id, [])), d.attributes)
                 if d.doc_type_fixed:
                     t, why = d.doc_type, "手で確定"
                 if doc_type and t != doc_type:

@@ -312,6 +312,32 @@ class DocTypeTests(TestCase):
         from .classify import explain
         self.assertEqual(explain("物件/見積/a.pdf")[1], "フォルダ名「見積」（見積）")  # 迷ったら other（ゲストに見せない）
 
+    def test_real_cases_2026_09_30(self):
+        """ユーザー確認で書類だった 6 件（図面は 1 件）。複数ページ・書類の多いフォルダ・書類名の語。"""
+        from .classify import doc_type_of as t
+        base = "図面原紙･資料 PDF/物件対応ファイル他/"
+        multi = {"pages": 5}
+        # 複数ページで、図面一式として分かれていない PDF → 書類
+        self.assertEqual(t(base + "2004年･H16 新事業体形成の為の要素開発/20241127081623360.pdf", "HB0011", "ocr", 0.75, "pdf",
+                           "工程表 4月 5月", multi), "general")
+        self.assertEqual(t(base + "2003年・H15 宝くじBOX販売物件/20250716081819252.pdf", "HDBY003920", "ocr", 0.75, "pdf",
+                           "発注伝票 品名 数量", multi), "contract")
+        self.assertEqual(t(base + "1993年 試験研究複合ファイル/x.pdf", "HB0011", "ocr", 0.75, "pdf", "", multi), "other")
+        # 1 ページでも書類の多いフォルダでは、図番らしい文字だけでは図面にしない
+        self.assertEqual(t(base + "2002年・H14 築地銀だこ/20250611082900706.pdf", "HDBY003920", "ocr", 0.75, "pdf",
+                           "部品寸法表 A 100 B 200"), "general")
+        self.assertEqual(t(base + "2000年・H12 大型仮設資料/20250625083031386.pdf", "HB0011", "ocr", 0.75, "pdf", "凛議書"), "general")
+        self.assertEqual(t(base + "1993年 試験研究複合ファイル/20241204080449608.pdf", "HB0011", "ocr", 0.75, "pdf", "理由書"), "general")
+        self.assertEqual(t(base + "a/20241204080525522.pdf", "HB0011", "ocr", 0.75, "pdf", "申請書 住所"), "application")
+        self.assertEqual(t(base + "a/20241204080525522.pdf", "HB0011", "ocr", 0.75, "pdf", ""), "other")
+        # 書類の多いフォルダでも、図番と表題欄の語がそろえば図面
+        self.assertEqual(t(base + "a/20250528083819213.pdf", "HDBY003920", "ocr", 0.75, "pdf", "図番 HDBY003920 尺度 1/10 材質 SS400"),
+                         "drawing")
+        # 図面一式としてページごとに分かれたもの（attributes に page がある）は今まで通り図面
+        self.assertEqual(t("図面/20-032 x.pdf", "HDBY003920", "ocr", 0.75, "pdf", "", {"pages": 12, "page": 3}), "drawing")
+        # 部品図のフォルダの 1 ページ PDF は今まで通り
+        self.assertEqual(t("図面 DXF・DWG・JW・PDF/CAK/HB0011XXXX差替3 スペーサー.pdf", "HB0011XXXX", "filename", 0.9, "pdf"), "drawing")
+
     def test_manual_fix_is_kept(self):
         from datetime import datetime, timezone
         from . import classify
@@ -431,3 +457,21 @@ class LoginLogoutTests(TestCase):
         self.assertTemplateUsed(r, "drawings/login.html")
         r = self.client.post("/accounts/login/?next=/admin/", {"username": "root", "password": "pw-12345678"})
         self.assertRedirects(r, "/admin/", fetch_redirect_response=False)
+
+
+class ReclassifyCommandTests(TestCase):
+    def test_dry_run_does_not_write(self):
+        import io
+        from datetime import datetime, timezone
+        f = SourceFile.objects.create(path="物件対応ファイル他/a/20241127081623360.pdf", kind="pdf", size=1,
+                                      mtime=datetime.now(timezone.utc))
+        d = Drawing.objects.create(file=f, drawing_no="HB0011", confidence=0.75, source="ocr", doc_type="drawing",
+                                   attributes={"pages": 3})
+        out = io.StringIO()
+        call_command("reclassify", "--dry-run", stdout=out)
+        self.assertIn("drawing → other", out.getvalue())
+        d.refresh_from_db()
+        self.assertEqual(d.doc_type, "drawing")
+        call_command("reclassify", stdout=io.StringIO())
+        d.refresh_from_db()
+        self.assertEqual(d.doc_type, "other")

@@ -18,7 +18,7 @@ from .search import search
 VIEWS = {"list": "一覧", "folder": "フォルダ別", "model": "型式別", "series": "図番系列別"}
 STATE_KEYS = ("q", "kind", "t", "v", "f", "m", "s")
 DOC_FILTERS = {"drawing": "製品図面", "all": "すべての文書", "site": "敷地・土地図", "contract": "契約書・見積",
-               "application": "申請書類", "other": "その他"}
+               "application": "申請書類", "general": "一般書類", "other": "その他"}
 MAX_CHILDREN = 300  # 左の階層に一度に出す数（図番の系列は数千になるため）
 NONE_LABEL = {"model": "（型式なし）", "series": "（図番なし）"}
 
