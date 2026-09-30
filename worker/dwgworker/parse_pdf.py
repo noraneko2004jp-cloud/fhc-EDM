@@ -173,19 +173,85 @@ def _drawing(fields, source, conf, needs_ocr, attrs):
             "attributes": {**attrs, **{k: fields[k] for k in EXTRA_FIELDS if fields.get(k)}}}
 
 
-def _bom(items, own_no, force, vlines=None):
-    """部品表と注記の参照図番。スキャン PDF の部品表は試験中のため、BOM_PDF=1 か force のときだけ。"""
+QTY_FILL_OK = 0.8  # 員数が入っている行がこの割合より少なければ、員数の欄を読み直す
+
+
+def _qty_rects(info) -> list[tuple]:
+    """員数の欄の、行ごとの範囲（ページ座標）。"""
+    rects = []
+    for t in info.get("qty") or []:
+        h = t["h"]
+        for y in t["rows"]:
+            rects.append((t["x0"] - h * 0.3, y - h * 0.5, t["x1"] + h * 0.3, y + h * 1.4))
+    return rects
+
+
+def _qty_reread(page, key, page_index, rects) -> list[dict]:
+    """員数の欄を行ごとに高い解像度で OCR し直す（結果は OCR の保存と同じ場所に保存）。"""
+    import hashlib as _h
+
+    tag = _h.sha1(json.dumps([[round(v, 1) for v in r] for r in rects]).encode()).hexdigest()[:10]
+    f = _cache_file(key, page_index)
+    f = f.with_name(f.name.replace(".json.gz", f"-qty-{tag}.json.gz")) if f else None
+    cached = _cache_load(f)
+    if cached is not None:
+        return cached["items"]
+    if not ocr_mac.available():
+        return []
+    out = []
+    for r in rects:
+        try:
+            out.extend(ocr_mac.ocr_region(page, r))
+        except Exception as e:  # noqa: BLE001
+            log.warning("員数の読み直しに失敗: %s", e)
+            return out
+    _cache_save(f, out, [])
+    return out
+
+
+def _merge_extra(items, extra):
+    """読み直した文字のうち、もとの OCR にない位置のものだけ足す。"""
+    add = []
+    for e in extra:
+        if not (e.get("text") or "").strip():
+            continue
+        cx, cy = e["x"] + e["w"] / 2, e["y"] + e["h"] / 2
+        if any(i["x"] - 1 <= cx <= i["x"] + i.get("w", 0) + 1 and i["y"] - 1 <= cy <= i["y"] + i.get("h", 0) + 1
+               for i in items):
+            continue
+        add.append({**e, "reread": True})
+    return items + add
+
+
+def _bom(items, own_no, force, vlines=None, reread=None):
+    """部品表と注記の参照図番。スキャン PDF の部品表は BOM_PDF=1 か force のときだけ。
+    reread：員数の欄を読み直す関数（行ごとの範囲のリスト → items）。OCR のページで員数の少ない表に使う。"""
     is_ocr = any(i.get("tokens") is not None for i in items)
     refs = {"note_refs": bom.note_refs([i["text"] for i in items], own_no),
             "assembly_refs": bom.assembly_refs(items, own_no, ocr=is_ocr)}
     refs = {k: v for k, v in refs.items() if v}
     if not (CONFIG.bom_pdf or force):
         return [], refs
+    vl = vlines or []
     try:
-        return bom.extract(bom.cells_from_ocr(items, vlines or []), vlines or []), refs
+        info = {}
+        rows = bom.extract(bom.cells_from_ocr(items, vl), vl, info)
+        if is_ocr and reread and rows and sum(1 for r in rows if r["qty"]) < len(rows) * QTY_FILL_OK:
+            rects = _qty_rects(info)
+            extra = reread(rects) if rects else []
+            if extra:
+                again = bom.extract(bom.cells_from_ocr(_merge_extra(items, extra), vl), vl)
+                if len(again) >= len(rows) and sum(1 for r in again if r["qty"]) > sum(1 for r in rows if r["qty"]):
+                    rows = again
+        return rows, refs
     except Exception as e:  # noqa: BLE001
         log.warning("部品表の読み取りに失敗: %s", e)
         return [], refs
+
+
+def _rereader(doc, key, p):
+    i = p["page_no"] - 1
+    return lambda rects: _qty_reread(doc[i], key, i, rects)
 
 
 def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = None) -> tuple[dict, dict[int, bytes]]:
@@ -230,7 +296,8 @@ def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = 
                 f["title"] = f"{fields.get('title', '')}（{p['page_no']}/{len(pages)}）".strip()
             f["file_title"] = fields.get("title", "")
             pconf = 0.75 if p["tb_codes"] else 0.4
-            rows, refs = _bom(p["items"], f["drawing_no"], force_bom, p["vlines"])
+            rows, refs = _bom(p["items"], f["drawing_no"], force_bom, p["vlines"],
+                              _rereader(doc, key, p) if p["text_source"] == "ocr" else None)
             attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5], **refs}
             drawings.append({"page_no": p["page_no"],
                              "drawing": _drawing(f, "ocr" if p["text_source"] == "ocr" else source, pconf,
@@ -243,7 +310,8 @@ def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = 
             fields["drawing_no"] = pages[0]["tb_codes"][0]
             conf = 0.75
         rows, refs = _bom(pages[0]["items"] if pages else [], fields.get("drawing_no", ""), force_bom,
-                          pages[0]["vlines"] if pages else [])
+                          pages[0]["vlines"] if pages else [],
+                          _rereader(doc, key, pages[0]) if pages and pages[0]["text_source"] == "ocr" else None)
         attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else [], **refs}
         drawings.append({"page_no": 1, "drawing": _drawing(fields, source, conf, needs_ocr, attrs),
                          "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]} for p in pages],

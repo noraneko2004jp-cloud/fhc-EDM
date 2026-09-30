@@ -401,7 +401,7 @@ def _tidy(found):
     return [r for r in out if r["_kind"] == "row"]
 
 
-def _table(items, anchor, others, vlines):
+def _table(items, anchor, others, vlines, info=None):
     """見出しの目印（「図番又は品番」）1 つぶんの表を読む。"""
     h = _h(anchor)
     x_lo = anchor["x"] - h * 11
@@ -425,11 +425,12 @@ def _table(items, anchor, others, vlines):
     pitch = h * 2.5
     col_xs = [v[0] for v in cols.values()]
     t_lo, t_hi = min(col_xs) - h * 10, max(col_xs) + h * 12
-    best = []
+    best, best_q = [], {}
     for start, step, y_lo, y_hi in ((top - 1, -1, lines[top]["y"], lines[top]["y"] + pitch * 3),
                                     (bottom + 1, +1, lines[bottom]["ylast"] - pitch * 3, lines[bottom]["ylast"])):
         if not 0 <= start < len(lines):
             continue
+        qinfo = {}
         bounds = _brackets(vlines, t_lo, t_hi, y_lo, y_hi, h)
         spans = _label(bounds, cols, h) if len(bounds) >= 3 else []
         if spans and any(lab == "part_no" for _, _, lab in spans):
@@ -437,6 +438,7 @@ def _table(items, anchor, others, vlines):
             y0 = lines[top]["y"] if step < 0 else lines[bottom]["ylast"]
             end = _extent(vlines, bounds, y0, h, up=step < 0)
             rows = _rows(lines, start, step, lambda cells, s=spans: _assign_by_lines(cells, s, h), lo, hi, pitch, end)
+            _qty_region(qinfo, spans, rows, h)
         else:
             xs = sorted(v[1] for v in cols.values())
             first_gap = xs[1] - xs[0] if len(xs) > 1 else h * 10
@@ -444,7 +446,9 @@ def _table(items, anchor, others, vlines):
             lo, hi = xs[0] - max(first_gap * 1.2, h * 4), xs[-1] + max(last_gap * 0.6, h * 1.5)
             rows = _rows(lines, start, step, lambda cells: _assign_by_header(cells, cols), lo, hi, pitch)
         if len(rows) > len(best):
-            best = rows
+            best, best_q = rows, qinfo
+    if info is not None and best_q.get("qty"):
+        info.setdefault("qty", []).extend(best_q["qty"])
     return best
 
 
@@ -579,7 +583,18 @@ def _mode(values, tol):
     return max(vs, key=lambda v: (sum(1 for x in vs if abs(x - v) <= tol), -v)) if vs else None
 
 
-def _grid_tables(items, vlines):
+def _qty_region(info, spans, rows, h):
+    """員数の欄（qty・qty2…）の位置と、行の高さを info に残す（OCR が落とした 1 桁の員数を読み直すため）。"""
+    if info is None or not rows:
+        return
+    qs = [(a, b) for a, b, lab in spans if lab == "qty" or (lab and _QTYN.match(lab))]
+    if not qs:
+        return
+    info.setdefault("qty", []).append({"x0": min(a for a, _ in qs), "x1": max(b for _, b in qs), "h": h,
+                                       "rows": sorted(r["_y"] for r in rows if "_y" in r)})
+
+
+def _grid_tables(items, vlines, info=None):
     """見出しの文字が読めなくても、部品表の罫線の格子から表を読む（スキャン図面向け）。
     2026-09-30 実スキャン（HULP003160・HUXP010143・HDBY003920）で確認した様式に合わせる：
       ・見出しは 2 段。下の段（図番又は品番・名称/規格・員数・材質・材料寸法）まで下りる線と、
@@ -645,6 +660,7 @@ def _grid_tables(items, vlines):
                 found.append({**row, "_y": ln["y"], "_kind": kind})
         rows = _renumber(_tidy(found))
         if rows:
+            _qty_region(info, final, rows, h)
             tables.append(rows)
     return tables
 
@@ -729,9 +745,10 @@ def _split_length(spans):
     return out
 
 
-def extract(items, vlines=None) -> list[dict]:
+def extract(items, vlines=None, info=None) -> list[dict]:
     """部品表の行のリストを返す。見つからなければ []。図面の中に表が複数（続きの表）あれば、行番号順にまとめる。
-    行: {item_no, part_no, name, qty, material, thickness, width, length, note, ref_drawing_no, raw_text, confidence}"""
+    行: {item_no, part_no, name, qty, material, thickness, width, length, note, ref_drawing_no, raw_text, confidence}
+    info に dict を渡すと、員数の欄の位置（{"qty": [{x0, x1, h, rows: [行の y…]}]}）を入れて返す。"""
     items = [i for i in items if (i.get("text") or "").strip()]
     is_ocr = any(i.get("ocr") for i in items)
     anchors = []
@@ -740,9 +757,9 @@ def extract(items, vlines=None) -> list[dict]:
         if any(a in k for a in _ANCHORS) and not any(m in k for m in TITLEBLOCK_MARKERS):
             if not any(abs(a["x"] - it["x"]) < _h(it) * 2 and abs(a["y"] - it["y"]) < _h(it) * 2 for a in anchors):
                 anchors.append(it)
-    tables = [t for a in anchors if (t := _table(items, a, anchors, vlines or []))]
+    tables = [t for a in anchors if (t := _table(items, a, anchors, vlines or [], info))]
     if not tables and vlines:
-        tables = _grid_tables(items, vlines)  # 見出しが読めないスキャン図面
+        tables = _grid_tables(items, vlines, info)  # 見出しが読めないスキャン図面
     if not tables:
         return []
     out, seen = [], set()

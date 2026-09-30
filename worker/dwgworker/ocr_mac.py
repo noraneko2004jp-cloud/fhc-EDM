@@ -25,8 +25,9 @@ def available() -> bool:
     return _ok
 
 
-def ocr_png(png: bytes, languages=("ja-JP", "en-US")) -> list[dict]:
-    """PNG を OCR し、[{"text", "conf", "x", "y", "w", "h"}] を返す（0〜1 の比率、原点は左下）。"""
+def ocr_png(png: bytes, languages=("ja-JP", "en-US"), min_height=None) -> list[dict]:
+    """PNG を OCR し、[{"text", "conf", "x", "y", "w", "h"}] を返す（0〜1 の比率、原点は左下）。
+    min_height：これより小さい文字（画像の高さに対する比率）は読まない。省略で Vision の既定。"""
     import Vision
     from Foundation import NSData
 
@@ -36,6 +37,8 @@ def ocr_png(png: bytes, languages=("ja-JP", "en-US")) -> list[dict]:
     req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
     req.setRecognitionLanguages_(list(languages))
     req.setUsesLanguageCorrection_(False)  # 図番などの記号列を辞書で直させない
+    if min_height is not None:
+        req.setMinimumTextHeight_(float(min_height))
     ok, err = handler.performRequests_error_([req], None)
     if not ok:
         raise RuntimeError(f"Vision OCR に失敗しました: {err}")
@@ -110,3 +113,26 @@ def lines(items: list[dict]) -> list[str]:
         else:
             rows.append({"cy": cy, "h": it["h"], "items": [it]})
     return [" ".join(i["text"] for i in sorted(r["items"], key=lambda i: i["x"])) for r in rows]
+
+
+def ocr_region(page, rect, dpi=600) -> list[dict]:
+    """ページの一部（ページ座標 pt、y 上向き (x0, y0, x1, y1)）を高い解像度で OCR し、ocr_page と同じ形の items を返す。
+    ページ全体の OCR では、枠の中にぽつんとある 1 桁の数字（部品表の員数の「1」など）が落ちやすいので、その欄だけ読み直す。"""
+    import pymupdf
+
+    W, H = page.rect.width, page.rect.height
+    x0, y0, x1, y1 = rect
+    x0, x1 = max(0.0, x0), min(W, x1)
+    y0, y1 = max(0.0, y0), min(H, y1)
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        return []
+    clip = pymupdf.Rect(x0, H - y1, x1, H - y0)
+    pix = page.get_pixmap(dpi=dpi, clip=clip, colorspace=pymupdf.csGRAY, alpha=False)
+    cw, ch = x1 - x0, y1 - y0
+    items = []
+    for r in ocr_png(pix.tobytes("png"), languages=("en-US",), min_height=0.0):
+        toks = [{"text": t["text"], "x": x0 + t["x"] * cw, "y": y0 + t["y"] * ch, "w": t["w"] * cw, "h": t["h"] * ch}
+                for t in r.get("tokens") or []]
+        items.append({"text": r["text"], "conf": r["conf"], "x": x0 + r["x"] * cw, "y": y0 + r["y"] * ch,
+                      "w": r["w"] * cw, "h": r["h"] * ch, "tokens": toks})
+    return items

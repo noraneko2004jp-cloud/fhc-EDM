@@ -150,11 +150,17 @@ def claim(request):
     ]})
 
 
+NUM_MAX = 99_999_999  # BomItem.qty（10 桁・小数 2 桁）に入る大きさ。OCR の読み違いで桁が並んだものは捨てる
+
+
 def _num(v):
     try:
-        return None if v in (None, "") else float(str(v).replace(",", ""))
+        x = None if v in (None, "") else float(str(v).replace(",", ""))
     except ValueError:
         return None
+    if x is None or x != x or abs(x) > NUM_MAX:
+        return None
+    return round(x, 2)
 
 _CTRL = dict.fromkeys([c for c in range(32) if c not in (9, 10, 13)] + list(range(0xD800, 0xE000)))
 
