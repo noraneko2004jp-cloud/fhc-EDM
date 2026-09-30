@@ -575,3 +575,114 @@ class BomRelationTests(TestCase):
         self.assertEqual(sorted(Job.objects.values_list("file__path", "priority")), [("a/1.dxf", 200), ("a/2.dxf", 200)])
         call_command("requeue", "--kind", "dxf", stdout=io.StringIO())  # 待ち中のものは重ねない
         self.assertEqual(Job.objects.count(), 3)
+
+
+def _dxf_bytes(frame=(420, 297), scale_factor=1.0, text="HB0011XXXX 部品図"):
+    """用紙の大きさの外枠と内枠、100mm の線を描いた DXF（紙の上の mm。scale_factor 倍で実寸の図面にする）。"""
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    w, h = frame
+    k = scale_factor
+    msp.add_lwpolyline([(0, 0), (w * k, 0), (w * k, h * k), (0, h * k)], close=True)
+    msp.add_lwpolyline([(15 * k, 10 * k), ((w - 10) * k, 10 * k), ((w - 10) * k, (h - 10) * k), (15 * k, (h - 10) * k)],
+                       close=True)
+    msp.add_line((50 * k, 50 * k), (150 * k, 50 * k))
+    msp.add_text(text, height=5 * k).set_placement((60 * k, 60 * k))
+    msp.add_line((-30 * k, (h + 20) * k), (-10 * k, (h + 20) * k))  # 図枠の外のメモ（用紙には入らない）
+    s = io.StringIO()
+    doc.write(s)
+    return s.getvalue().encode("utf-8")
+
+
+class DxfPdfTests(TestCase):
+    def _pdf(self, data, scale=""):
+        import pymupdf
+        from . import dxfpdf
+
+        pdf, sheet = dxfpdf.render(data, scale)
+        page = pymupdf.open(stream=pdf, filetype="pdf")[0]
+        return page, sheet
+
+    @staticmethod
+    def _mm(pt):
+        return round(pt / 72 * 25.4)
+
+    def _has_line_mm(self, page, mm):
+        for p in page.get_drawings():
+            for it in p["items"]:
+                if it[0] == "l" and abs(it[1].y - it[2].y) < 0.2 and abs(abs(it[1].x - it[2].x) / 72 * 25.4 - mm) < 0.8:
+                    return True
+        return False
+
+    def test_scale_parse(self):
+        from .dxfpdf import scale_denominator
+        self.assertEqual(scale_denominator("1/30"), 30)
+        self.assertEqual(scale_denominator("S=1:25"), 25)
+        self.assertEqual(scale_denominator("１／１０"), 10)
+        self.assertIsNone(scale_denominator("NTS"))
+
+    def test_a3_drawing_is_a3_full_size(self):
+        page, sheet = self._pdf(_dxf_bytes((420, 297)), "1/10")
+        self.assertEqual((sheet.paper, sheet.exact), ("A3", True))
+        self.assertEqual((self._mm(page.rect.width), self._mm(page.rect.height)), (420, 297))
+        self.assertTrue(self._has_line_mm(page, 100))  # 100mm の線が 100mm で出る（原寸）
+
+    def test_a2_drawing_stays_a2(self):
+        page, sheet = self._pdf(_dxf_bytes((594, 420)), "1/30")
+        self.assertEqual(sheet.paper, "A2")
+        self.assertEqual((self._mm(page.rect.width), self._mm(page.rect.height)), (594, 420))
+        self.assertTrue(self._has_line_mm(page, 100))
+
+    def test_portrait_a3(self):
+        page, sheet = self._pdf(_dxf_bytes((297, 420)))
+        self.assertEqual(sheet.paper, "A3")
+        self.assertEqual((self._mm(page.rect.width), self._mm(page.rect.height)), (297, 420))
+
+    def test_real_size_model_uses_title_scale(self):
+        page, sheet = self._pdf(_dxf_bytes((420, 297), scale_factor=30), "1/30")
+        self.assertEqual((sheet.paper, sheet.factor), ("A3", 30))
+        self.assertTrue(self._has_line_mm(page, 100))  # 3000mm の線が 1/30 で 100mm
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintPdfViewTests(TestCase):
+    def setUp(self):
+        import pathlib
+        from datetime import datetime, timezone
+        self.media = tempfile.TemporaryDirectory()
+        self.src = tempfile.TemporaryDirectory()
+        self.enterContext(override_settings(MEDIA_ROOT=self.media.name, SOURCE_ROOT=self.src.name))
+        (pathlib.Path(self.src.name) / "図面").mkdir()
+        (pathlib.Path(self.src.name) / "図面" / "HB0011XXXX.dxf").write_bytes(_dxf_bytes())
+        now = datetime.now(timezone.utc)
+        f = SourceFile.objects.create(path="図面/HB0011XXXX.dxf", kind="dxf", size=1, mtime=now)
+        self.d = Drawing.objects.create(file=f, drawing_no="HB0011XXXX", doc_type="drawing", scale="1/10")
+        pf = SourceFile.objects.create(path="図面/scan.pdf", kind="pdf", size=1, mtime=now)
+        self.p = Drawing.objects.create(file=pf, drawing_no="HB0012XXXX", doc_type="drawing")
+        c = SourceFile.objects.create(path="物件/契約.dxf", kind="dxf", size=1, mtime=now)
+        self.c = Drawing.objects.create(file=c, doc_type="contract")
+        u = User.objects.create_user("g", password="pw-12345678")
+        u.groups.add(Group.objects.get(name="Guest"))
+        self.client.login(username="g", password="pw-12345678")
+
+    def test_download_and_cache(self):
+        r = self.client.get(f"/d/{self.d.pk}/")
+        self.assertContains(r, "印刷用PDF")
+        r = self.client.get(f"/d/{self.d.pk}/print.pdf")
+        self.assertEqual(r.status_code, 200)
+        body = b"".join(r.streaming_content)
+        self.assertTrue(body.startswith(b"%PDF"))
+        self.assertIn("HB0011XXXX_A3.pdf", r["Content-Disposition"].encode("latin-1").decode("utf-8", "replace")
+                      if "filename*" not in r["Content-Disposition"] else r["Content-Disposition"])
+        self.assertTrue(AuditLog.objects.filter(target__contains="PDF A3").exists())
+        import pathlib
+        self.assertEqual(len(list((pathlib.Path(self.media.name) / "print").glob("*.pdf"))), 1)
+        (pathlib.Path(self.src.name) / "図面" / "HB0011XXXX.dxf").unlink()  # 2 回目は保存した PDF（原本を読まない）
+        self.assertEqual(self.client.get(f"/d/{self.d.pk}/print.pdf").status_code, 200)
+
+    def test_not_for_pdf_or_hidden(self):
+        self.assertNotContains(self.client.get(f"/d/{self.p.pk}/"), "印刷用PDF")
+        self.assertEqual(self.client.get(f"/d/{self.p.pk}/print.pdf").status_code, 404)
+        self.assertEqual(self.client.get(f"/d/{self.c.pk}/print.pdf").status_code, 404)  # ゲストに見えない書類

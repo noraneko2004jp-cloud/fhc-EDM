@@ -136,6 +136,51 @@ def download(request, pk):
     return FileResponse(fh, as_attachment=True, filename=d.file.filename)
 
 
+PRINT_PDF_MAX_BYTES = 60 * 1024 * 1024  # これより大きな DXF は PDF にしない（サーバーの負荷）
+
+
+def print_pdf(request, pk):
+    """DXF を図面の尺度どおり（元の用紙サイズ・原寸）の PDF にしてダウンロード。作った PDF は保存して使い回す。"""
+    import hashlib
+    from pathlib import PurePosixPath
+
+    from . import dxfpdf
+
+    d = get_object_or_404(access.visible(request.user, Drawing.objects.select_related("file")), pk=pk)
+    if d.file.kind != "dxf":
+        raise Http404
+    stem = PurePosixPath(d.file.filename).stem
+    key = hashlib.sha256(f"{d.file.path}|{d.file.mtime.isoformat() if d.file.mtime else ''}|{d.file.size}|{d.scale}"
+                         .encode()).hexdigest()[:24]
+    cache_dir = Path(settings.MEDIA_ROOT) / "print"
+    cached = sorted(cache_dir.glob(f"{d.file_id}-{key}-*.pdf")) if cache_dir.exists() else []
+    if cached:
+        path = cached[0]
+    else:
+        try:
+            with open_source(d.file.path) as fh:
+                data = fh.read(PRINT_PDF_MAX_BYTES + 1)
+        except (OSError, ValueError) as e:
+            return HttpResponse(f"原本を開けませんでした（{e}）。ファイルサーバーへの接続設定を確認してください。", status=502)
+        if len(data) > PRINT_PDF_MAX_BYTES:
+            return HttpResponse("DXF が大きすぎるため PDF にできません。原本をダウンロードしてください。", status=413)
+        try:
+            pdf, sheet = dxfpdf.render(data, d.scale, d.drawing_no or stem)
+        except Exception as e:  # noqa: BLE001
+            return HttpResponse(f"PDF を作れませんでした（{type(e).__name__}: {e}）。原本をダウンロードしてください。", status=500)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for old in cache_dir.glob(f"{d.file_id}-*.pdf"):  # 原本が更新された前の PDF は消す
+            old.unlink(missing_ok=True)
+        path = cache_dir / f"{d.file_id}-{key}-{sheet.paper or 'A3fit'}.pdf"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(pdf)
+        tmp.replace(path)
+    paper = path.stem.rsplit("-", 1)[-1]
+    AuditLog.objects.create(user=request.user, action=AuditLog.Action.DOWNLOAD, target=f"{d.file.path} （PDF {paper}）")
+    name = f"{stem}_{paper}.pdf" if paper != "A3fit" else f"{stem}_A3縮小.pdf"
+    return FileResponse(open(path, "rb"), as_attachment=True, filename=name, content_type="application/pdf")
+
+
 def bom_xlsx(request, pk):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill

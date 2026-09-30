@@ -5,3 +5,5 @@ smbprotocol>=1.14
 openpyxl>=3.1
 gunicorn>=23
 whitenoise>=6.7
+ezdxf>=1.4          # DXF → 印刷用 PDF
+pymupdf>=1.24

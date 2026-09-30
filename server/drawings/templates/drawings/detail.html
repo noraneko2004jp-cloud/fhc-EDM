@@ -38,6 +38,7 @@ document.addEventListener("keydown", function(e){
     <p style="font-size:12px;margin:8px 0 0"><span class="pill {% if d.source == 'ocr' or d.source == 'filename' %}w{% else %}ok{% endif %}">{{ d.get_source_display }}</span> 表題欄の読み取り元{% if d.needs_ocr %} ・ <span class="pill w">OCR待ち</span>{% endif %}{% if d.attributes.pages > 1 %} ・ {{ d.attributes.pages }} ページ{% endif %}</p>
     <div class="acts">
       <a class="btn pri" href="{% url 'download' d.pk %}">原本をダウンロード</a>
+      {% if d.file.kind == "dxf" %}<a class="btn" href="{% url 'print_pdf' d.pk %}" title="図面の尺度どおり（元の用紙サイズ・原寸）の PDF。A2 の図面は A2 の PDF になります。A3 の紙にはプリンターで縮小して印刷してください">印刷用PDF</a>{% endif %}
       {% if bom %}<a class="btn" href="{% url 'bom_xlsx' d.pk %}">部品表をExcel出力</a>{% endif %}
     </div>
   </div>
