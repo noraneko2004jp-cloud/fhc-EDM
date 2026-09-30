@@ -5,7 +5,7 @@
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
   python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用。スキャンPDFはOCRも行う）
                                   FILE は手元のファイルか、共有フォルダ内のパス。--bom で部品表を表の形で表示
-  python -m dwgworker bomtest [フォルダ] --kind dxf --limit 30
+  python -m dwgworker bomtest [フォルダ] --kind dxf --limit 30 [--skip フォルダ名] [--match 正規表現]
                                   共有フォルダの図面の部品表を試しに読み、結果を表示して CSV に保存（サーバー・DB は変えない）
   python -m dwgworker probe [smb://サーバー/共有] [--minutes 10]
                                    ファイルサーバーに接続し、直下のフォルダごとの件数を表示（読み取りのみ）
@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+import unicodedata
 import json
 import logging
 import sys
@@ -131,7 +133,7 @@ def print_bom(path, dr):
               + (f"  → 図面 {r['ref_drawing_no']}" if r.get("ref_drawing_no") else ""))
 
 
-def bomtest(folder, kind, limit, every):
+def bomtest(folder, kind, limit, every, skip=(), match=""):
     """共有フォルダの図面の部品表を試しに読む（DB・サーバーは変えない）。結果は画面と CSV に出す。"""
     import csv
     from datetime import datetime
@@ -148,6 +150,10 @@ def bomtest(folder, kind, limit, every):
                     "関連図面", "信頼度", "注記の参照図番", "組立図番", "備考"])
         for rel, _size, _mtime in source.walk(root, use_include=not folder):
             if not rel.lower().endswith("." + kind):
+                continue
+            if any(x and x in rel for x in skip):
+                continue
+            if match and not re.search(match, unicodedata.normalize("NFKC", rel.rsplit("/", 1)[-1]).upper()):
                 continue
             seen += 1
             if (seen - 1) % max(every, 1):
@@ -191,6 +197,8 @@ def main(argv=None):
     ap.add_argument("--kind", choices=["dxf", "pdf"], default="dxf", help="bomtest：対象の種類")
     ap.add_argument("--limit", type=int, default=30, help="bomtest：読むファイル数")
     ap.add_argument("--every", type=int, default=1, help="bomtest：見つけたファイルを何件おきに読むか（広く散らして試す）")
+    ap.add_argument("--skip", action="append", default=[], help="bomtest：このフォルダ名を含むパスは読まない（何度でも指定可）")
+    ap.add_argument("--match", default="", help="bomtest：ファイル名がこの正規表現に合うものだけ読む（例 '^[A-Z]{2,4}[0-9]' で図番で始まるもの）")
     ap.add_argument("--minutes", type=float, default=2, help="probe で数える時間（分）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -199,7 +207,7 @@ def main(argv=None):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     if a.cmd == "bomtest":
-        return bomtest(a.file or "", a.kind, a.limit, a.every)
+        return bomtest(a.file or "", a.kind, a.limit, a.every, a.skip, a.match)
 
     if a.cmd == "parse":
         from . import parse_dxf, parse_pdf
