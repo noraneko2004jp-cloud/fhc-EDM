@@ -686,3 +686,23 @@ class PrintPdfViewTests(TestCase):
         self.assertNotContains(self.client.get(f"/d/{self.p.pk}/"), "印刷用PDF")
         self.assertEqual(self.client.get(f"/d/{self.p.pk}/print.pdf").status_code, 404)
         self.assertEqual(self.client.get(f"/d/{self.c.pk}/print.pdf").status_code, 404)  # ゲストに見えない書類
+
+
+class BomReportCommandTests(TestCase):
+    def test_report_and_worst(self):
+        from datetime import datetime, timezone
+        from drawings.models import BomItem
+        now = datetime.now(timezone.utc)
+        f = SourceFile.objects.create(path="図面/a.pdf", kind="pdf", size=1, mtime=now)
+        d = Drawing.objects.create(file=f, drawing_no="HUXP010143", doc_type="drawing")
+        Drawing.objects.create(file=SourceFile.objects.create(path="図面/b.pdf", kind="pdf", size=1, mtime=now),
+                               drawing_no="HUXP010153")
+        for i, (p, ref) in enumerate([("HUXP010153", "HUXP010153"), ("1UXP010310", ""), ("HU99003.060", "")]):
+            BomItem.objects.create(drawing=d, row=i + 1, part_no=p, name="パネル", ref_drawing_no=ref)
+        out = io.StringIO()
+        call_command("bom_report", stdout=out)
+        self.assertIn("部品表あり 1 件 / 行 3", out.getvalue())
+        self.assertIn("うち図面が見つかる 1（100%）", out.getvalue())
+        out = io.StringIO()
+        call_command("bom_report", worst=5, stdout=out)
+        self.assertIn("HUXP010143,3,0.67", out.getvalue())
