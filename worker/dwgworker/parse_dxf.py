@@ -54,10 +54,26 @@ def _text_of(e):
     return _plain(e.dxf.get("text", ""))
 
 
-def _collect(entities, out_items, out_attribs, depth=0):
+def _vertical(x0, y0, x1, y1, out):
+    if out is not None and abs(x0 - x1) < 1e-3 and abs(y1 - y0) > 1e-3:
+        out.append((float(x0), float(min(y0, y1)), float(max(y0, y1))))
+
+
+def _collect(entities, out_items, out_attribs, depth=0, vlines=None):
+    """文字（座標付き）・ブロック属性・縦の線（部品表の罫線。列の境目に使う）を集める。"""
     for e in entities:
         t = e.dxftype()
-        if t in TEXT_TYPES:
+        if t == "LINE":
+            s, en = e.dxf.start, e.dxf.end
+            _vertical(s[0], s[1], en[0], en[1], vlines)
+        elif t in ("LWPOLYLINE", "POLYLINE") and vlines is not None:
+            try:
+                pts = [(p[0], p[1]) for p in (e.get_points("xy") if t == "LWPOLYLINE" else e.points())]
+                for a, b in zip(pts, pts[1:] + (pts[:1] if e.is_closed else [])):
+                    _vertical(a[0], a[1], b[0], b[1], vlines)
+            except Exception:  # noqa: BLE001  3D ポリラインなど、線として読めないものは飛ばす
+                pass
+        elif t in TEXT_TYPES:
             txt = (_text_of(e) or "").strip()
             if txt:
                 ins = e.dxf.get("insert", (0, 0, 0))
@@ -71,7 +87,7 @@ def _collect(entities, out_items, out_attribs, depth=0):
                     ins = a.dxf.get("insert", (0, 0, 0))
                     out_items.append({"text": txt, "x": float(ins[0]), "y": float(ins[1]), "h": float(a.dxf.get("height", 1.0) or 1.0), "layer": a.dxf.get("layer", "")})
             try:
-                _collect([v for v in e.virtual_entities() if v.dxftype() != "ATTDEF"], out_items, out_attribs, depth + 1)
+                _collect([v for v in e.virtual_entities() if v.dxftype() != "ATTDEF"], out_items, out_attribs, depth + 1, vlines)
             except Exception:  # 壊れたブロックは飛ばす
                 pass
 
@@ -124,18 +140,18 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
     data, cp_fixed = fix_japanese_codepage(data)
     doc, auditor = recover.read(io.BytesIO(data))
     msp = doc.modelspace()
-    items, attribs = [], []
-    _collect(msp, items, attribs)
+    items, attribs, vlines = [], [], []
+    _collect(msp, items, attribs, vlines=vlines)
     # 表題欄がペーパー空間にある図面も多い
     paper = [lay for lay in doc.layouts if lay.name != "Model" and len(lay) > 0]
     for lay in paper:
-        _collect(lay, items, attribs)
+        _collect(lay, items, attribs, vlines=vlines)
     fields, source, conf = titleblock.resolve(path, attribs, items, base_source="attrib")
     if source == "attrib" and conf < 0.9:
         source = "text"
     text = "\n".join(i["text"] for i in items)
     try:
-        bom_rows = bom.extract(items)
+        bom_rows = bom.extract(items, vlines)
         refs = bom.note_refs([i["text"] for i in items], fields.get("drawing_no", ""))
         parents = bom.assembly_refs(items, fields.get("drawing_no", ""))
         bom_error = ""

@@ -143,3 +143,97 @@ class BomDxfTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- 社内の様式そのもの（実 DXF 5 件で確かめた配置。文字は架空）----
+# 見出しの「図番又は品番」の左端を 0 とした、列の罫線と文字の位置
+TPL_LINES = [-26.89, -23.89, -20.89, -14.89, 45.11, 135.11, 168.11, 177.11, 192.11, 210.11, 225.11, 232.61, 240.11]
+TPL_SUBLINES = [144.11, 150.11, 156.11, 162.11]  # 員数の欄の中の細い区切り（見出しの段より上だけ）
+TPL_HEADER = [  # (dx, dy, 文字, 高さ)
+    (-25.93, 3.5, "＋", 3.0), (-22.93, 3.5, "新", 3.0), (-19.43, 3.5, "見", 3.0), (-16.93, 3.5, "出", 3.0),
+    (63.0, 3.0, "特　　　　　　　　　　　記", 3.0), (181.4, 3.0, "厚　さ", 3.0), (195.5, 3.0, "幅(直径)", 3.0),
+    (212.0, 3.0, "長　さ", 3.0), (226.8, 2.75, "質量", 2.5), (235.9, 2.75, "計", 2.5),
+    (-22.93, 0.5, "出", 3.0), (171.0, 0.5, "材質", 3.0), (0.0, 0.0, "図　番　又　は　品　番", 3.0),
+    (63.0, -2.0, "名　　称　　/　　規　　格", 3.0), (135.0, -2.0, "員　　　　数", 3.0), (189.0, -2.0, "材　　　料　　　寸　　　法", 3.0),
+    (-25.93, -2.5, "－", 3.0), (-22.93, -2.5, "図", 3.0), (-19.43, -2.5, "番", 3.0), (-16.93, -2.5, "号", 3.0),
+]
+
+
+def tpl_table(ox, oy, rows, n_rows):
+    """様式の表 1 つ分の (文字, 縦線)。rows: [(番号, 品番, 名称, 員数, 材質, 厚さ, 幅, 長さ, 質量)]"""
+    items = [t(s, ox + dx, oy + dy, hh) for dx, dy, s, hh in TPL_HEADER]
+    top = oy + 3 + 8 * n_rows
+    lines = [(ox + dx, oy - 3, top) for dx in TPL_LINES] + [(ox + dx, oy + 2, top) for dx in TPL_SUBLINES]
+    for k, (no, part, name, qty, mat, th, wd, ln, wt) in enumerate(rows):
+        y = oy + 7.9 + 8 * k
+        items += [t(str(no), ox - 18.46, y + 1.5, 3.2), t(part, ox - 13.5, y, 3.2), t(name, ox + 46.5, y, 3.2)]
+        for val, dx in ((qty, 136.5), (mat, 169.5), (th, 178.5), (wd, 193.5), (ln, 211.5)):
+            if val:
+                items.append(t(val, ox + dx, y, 3.2))
+        if wt:
+            items += [t(wt, ox + 226.35, y - 0.5, 3.2), t(wt, ox + 233.85, y - 0.5, 3.2)]
+    return items, lines
+
+
+def tpl_drawing():
+    right, rl = tpl_table(0, 0, [
+        (1, "ZZAB100010", "テストユカ/ドア", "1", "", "", "", "", "12.00"),
+        (2, "P/L", "ﾃｽﾄﾊﾟｲﾌﾟ-25×35×1.2", "2", "0C1", "12", "58", "2438", "1.36"),
+        (3, "0280-RG-TS-2311-16KG", "ﾄﾘｮｳ/ﾃｽﾄ 16kg", "1", "", "", "", "0.5m", ""),
+    ], 6)
+    left, ll = tpl_table(-281.5, -35, [
+        (4, "ZZAB100020", "テストヤネ", "1", "", "", "", "", ""),
+        (5, "P/コ", "ﾃｽﾄｱﾝｸﾞﾙ-30×25×1.6", "4", "0C2", "16", "46", "2055", "1.19"),
+    ], 13)
+    extra = [
+        # 表の上の図の文字（表の罫線より上）：拾わない
+        t("A", -10, 55, 6.0), t("8", 40, 56, 3.2), t("桁立面/窓", 50, 57, 4.8), t("注記：溶接部はスラグを除去すること", 0, 70, 4.8),
+        # 表題欄（見出しの下）
+        t("適用型式又は特記", 10, -6.5, 3.0), t("認可", 42.5, -6.5, 3.0), t("尺度", 122, -6.5, 3.0),
+        t("ZZAB000010", -25.5, -31.3, 3.2), t("1", 5, -31.3, 3.2), t("組　立　図　番", -24, -36.6, 3.0), t("員数", 4, -36.6, 3.0),
+        # 左の表の 2 段の行：名称が 2 行、員数は行の真ん中
+    ]
+    y6 = -35 + 7.9 + 8 * 2
+    extra += [t("6", -281.5 - 18.46, y6 + 1.5, 3.2), t("X", -281.5 - 14.0, y6, 3.2), t("ﾃｽﾄﾄﾘｮｳ#100ﾌﾞﾗｯｸ", -281.5 + 46.5, y6, 3.2),
+              t("ﾃｽﾄｼﾝﾅｰ/ﾃｽﾄ塗料", -281.5 + 46.5, y6 + 3.67, 3.2), t("54", -281.5 + 136.5, y6 - 4.4, 3.2)]
+    return right + left + extra, rl + ll
+
+
+class BomTemplateTests(unittest.TestCase):
+    def test_company_template_with_continuation_table(self):
+        items, vlines = tpl_drawing()
+        rows = bom.extract(items, vlines)
+        self.assertEqual([r["item_no"] for r in rows], ["1", "2", "3", "4", "5", "6"])
+        r = {x["item_no"]: x for x in rows}
+        self.assertEqual((r["1"]["part_no"], r["1"]["ref_drawing_no"], r["1"]["qty"]), ("ZZAB100010", "ZZAB100010", "1"))
+        self.assertEqual((r["2"]["material"], r["2"]["thickness"], r["2"]["width"], r["2"]["length"]), ("0C1", "12", "58", "2438"))
+        self.assertEqual((r["3"]["ref_drawing_no"], r["3"]["length"]), ("", "0.5m"))
+        # 左下の続きの表
+        self.assertEqual((r["5"]["part_no"], r["5"]["qty"], r["5"]["thickness"], r["5"]["width"], r["5"]["length"]),
+                         ("P/コ", "4", "16", "46", "2055"))
+        self.assertEqual(r["4"]["ref_drawing_no"], "ZZAB100020")
+        # 2 段の行：名称は上から、員数は行の真ん中のもの
+        self.assertEqual((r["6"]["name"], r["6"]["qty"]), ("テストシンナー/テスト塗料 テストトリョウ#100ブラック", "54"))
+        # 表の上の図の文字・注記、表題欄は入らない
+        text = " ".join(x["raw_text"] for x in rows)
+        for w in ("桁立面", "注記", "適用型式", "ZZAB000010"):
+            self.assertNotIn(w, text)
+        self.assertEqual(bom.assembly_refs(items, "ZZAB200000"), ["ZZAB000010"])
+
+    def test_template_dxf_end_to_end(self):
+        import ezdxf
+        from dwgworker import parse_dxf
+        items, vlines = tpl_drawing()
+        doc = ezdxf.new("R2010")
+        msp = doc.modelspace()
+        for i in items:
+            msp.add_text(i["text"], height=i["h"], dxfattribs={"insert": (i["x"], i["y"])})
+        for x, a, b in vlines:
+            msp.add_line((x, a), (x, b))
+        buf = io.StringIO()
+        doc.write(buf)
+        res, _ = parse_dxf.parse(buf.getvalue().encode("utf-8"), "ZZAB200000 テスト組立.dxf")
+        d = res["drawings"][0]
+        self.assertEqual([r["item_no"] for r in d["bom"]], ["1", "2", "3", "4", "5", "6"])
+        self.assertEqual(d["bom"][4]["length"], "2055")
+        self.assertEqual(d["drawing"]["attributes"].get("assembly_refs"), ["ZZAB000010"])
