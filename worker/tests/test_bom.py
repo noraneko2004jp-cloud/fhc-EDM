@@ -70,6 +70,60 @@ class BomExtractTests(unittest.TestCase):
                          ["HUCP101040"])
 
 
+def t(text, x, y, h=3.5):
+    return {"text": text, "x": float(x), "y": float(y), "h": h}
+
+
+# 実 DXF（HCY1300213 ｶｲﾀﾞﾝﾔﾈｸﾐﾀﾃ など）で見えた崩れ方を再現した表
+#   ・見出しが 3 段（図番又は品番／特記・厚さ・幅・長さ／名称・員数・材質）
+#   ・行番号が部品の文字より少し上にずれた行、行番号が品番とくっついた行
+#   ・名称の 2 行目、表の上の注記、購入品の品番（塗料）
+REAL = [
+    # 表題欄（見出しより下）
+    t("適用型式又は特記", 20, 88), t("製　図", 60, 88), t("組　立　図　番", 5, 80),
+    # 見出し（3 段）
+    t("名 称 / 規 格", 60, 100), t("員 数", 120, 100), t("材 質", 135, 100),
+    t("特　　記", 60, 103.5), t("厚　さ", 150, 103.5), t("幅(直径)", 163, 103.5), t("長　さ", 185, 103.5),
+    t("出", 5, 107), t("図　番　又　は　品　番", 20, 107),
+    # 行（下から）
+    t("1 HCY1301213", 5, 114), t("ｶｲﾀﾞﾝﾔﾈｺｯｶｸ", 60, 114), t("1", 122, 114),
+    t("2", 5, 121), t("X", 20, 121), t("EKｶｸﾅﾐK2ｶﾞﾀ/片山鉄建", 60, 121), t("1", 122, 121), t("0.27", 150, 121), t("820.00", 163, 121), t("4100", 185, 121),
+    t("3", 5, 130.5), t("P/ｺ", 20, 128), t("ｶﾗｰDR323-50×77×80×0.8", 60, 128), t("1", 122, 128), t("0.8", 150, 128), t("203.00", 163, 128), t("1100", 185, 128),
+    t("4", 5, 135), t("0280-RG-TS-2311-16KG", 20, 135), t("ﾄﾘｮｳ/濃茶/#100ｶﾞﾙｺｰﾄ", 60, 135), t("1", 122, 135),
+    t("5", 5, 142), t("6139-FMJ13", 20, 142), t("ﾄﾞﾘﾙｽｸﾘｭｰ/4×13", 60, 142), t("60", 122, 142),
+    t("6", 5, 149), t("X", 20, 149), t("ﾘﾙｶｶﾞﾙｺｰﾄ#100ﾌﾞﾗｯｸ", 60, 149),
+    t("ｱﾙｸｱ#730ﾌﾞﾗｯｸ/松岡塗料", 60, 153),
+    # 表の上の注記（拾わない）
+    t("注記：1.溶接要領はHU90002205/歩廊による", 20, 165), t("反対側は開けない", 30, 171), t("4-φ14穴", 40, 177),
+]
+
+# 部品表のない単品図面（HDZY007970 など）：表題欄の「組立図番・員数」を部品表と取り違えない。親の図番は別に拾う
+SINGLE = [
+    t("適用型式又は特記", 20, 50), t("認可 点検 製　図 黒埼", 60, 50),
+    t("名称", 60, 40), t("材質", 100, 40), t("員数", 120, 40),
+    t("HDZY007950 1", 5, 30),
+    t("組　立　図　番 員数", 5, 26), t("ﾊﾟﾈﾙ　ﾌﾚｰﾑ", 60, 26), t("HDZY007970", 150, 26),
+]
+
+
+class BomRealPatternTests(unittest.TestCase):
+    def test_multiline_header_offsets_and_notes(self):
+        rows = bom.extract(REAL)
+        self.assertEqual([r["item_no"] for r in rows], ["1", "2", "3", "4", "5", "6"])
+        r = {x["item_no"]: x for x in rows}
+        self.assertEqual((r["1"]["part_no"], r["1"]["ref_drawing_no"], r["1"]["name"]), ("HCY1301213", "HCY1301213", "カイダンヤネコッカク"))
+        self.assertEqual((r["2"]["thickness"], r["2"]["width"], r["2"]["length"], r["2"]["material"]), ("0.27", "820.00", "4100", ""))
+        self.assertEqual((r["3"]["part_no"], r["3"]["qty"]), ("P/コ", "1"))  # ずれた行番号を正しい行に
+        self.assertEqual(r["4"]["ref_drawing_no"], "")  # 塗料の品番の一部を図番にしない
+        self.assertEqual(r["5"]["qty"], "60")
+        self.assertIn("松岡塗料", r["6"]["name"])  # 名称の 2 行目
+        self.assertFalse(any("注記" in x["raw_text"] or "図番又は品番" in x["raw_text"].replace(" ", "").replace("　", "") for x in rows))
+
+    def test_single_part_drawing_has_no_bom_but_parent(self):
+        self.assertEqual(bom.extract(SINGLE), [])
+        self.assertEqual(bom.assembly_refs(SINGLE, "HDZY007970"), ["HDZY007950"])
+
+
 class BomDxfTests(unittest.TestCase):
     def test_dxf_parse_includes_bom(self):
         import ezdxf

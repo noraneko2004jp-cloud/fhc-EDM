@@ -36,11 +36,22 @@ def _setup_fonts():
     _font_ready = True
 
 
+_CTRL_CODES = [("%%C", "φ"), ("%%c", "φ"), ("%%D", "°"), ("%%d", "°"), ("%%P", "±"), ("%%p", "±"),
+               ("%%U", ""), ("%%u", ""), ("%%O", ""), ("%%o", ""), ("%%%", "%")]
+
+
+def _plain(text: str) -> str:
+    """AutoCAD・Jw_cad の制御コード（%%c＝φ、%%d＝°、%%p＝±、%%u 下線など）を普通の文字に。"""
+    for a, b in _CTRL_CODES:
+        text = text.replace(a, b)
+    return text
+
+
 def _text_of(e):
     t = e.dxftype()
     if t == "MTEXT":
-        return e.plain_text()
-    return e.dxf.get("text", "")
+        return _plain(e.plain_text())
+    return _plain(e.dxf.get("text", ""))
 
 
 def _collect(entities, out_items, out_attribs, depth=0):
@@ -54,7 +65,7 @@ def _collect(entities, out_items, out_attribs, depth=0):
                 out_items.append({"text": txt, "x": float(ins[0]), "y": float(ins[1]), "h": float(h), "layer": e.dxf.get("layer", "")})
         elif t == "INSERT" and depth < 4:
             for a in e.attribs:
-                txt = (a.dxf.get("text", "") or "").strip()
+                txt = _plain(a.dxf.get("text", "") or "").strip()
                 out_attribs.append({"tag": a.dxf.get("tag", ""), "text": txt, "block": e.dxf.name})
                 if txt:
                     ins = a.dxf.get("insert", (0, 0, 0))
@@ -126,9 +137,10 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
     try:
         bom_rows = bom.extract(items)
         refs = bom.note_refs([i["text"] for i in items], fields.get("drawing_no", ""))
+        parents = bom.assembly_refs(items, fields.get("drawing_no", ""))
         bom_error = ""
     except Exception as e:  # 部品表が読めなくても図面は登録する
-        bom_rows, refs, bom_error = [], [], f"{type(e).__name__}: {e}"[:300]
+        bom_rows, refs, parents, bom_error = [], [], [], f"{type(e).__name__}: {e}"[:300]
         log.warning("部品表の読み取りに失敗 %s: %s", path, bom_error)
     thumb, thumb_error = None, ""
     try:
@@ -143,6 +155,7 @@ def parse(data: bytes, path: str) -> tuple[dict, dict[int, bytes]]:
                               "audit_errors": len(auditor.errors), "codepage_fixed": cp_fixed, "attribs": attribs[:200],
                               **{k: fields[k] for k in ("model", "sheet_title", "sheet_no", "job_no", "file_title") if fields[k]},
                               **({"note_refs": refs} if refs else {}),
+                              **({"assembly_refs": parents} if parents else {}),
                               **({"bom_error": bom_error} if bom_error else {}),
                               **({"thumb_error": thumb_error} if thumb_error else {})}}
     result = {

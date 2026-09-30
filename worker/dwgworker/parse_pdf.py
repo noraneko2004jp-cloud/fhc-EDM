@@ -82,7 +82,9 @@ def _drawing(fields, source, conf, needs_ocr, attrs):
 
 def _bom(items, own_no, force):
     """部品表と注記の参照図番。スキャン PDF の部品表は試験中のため、BOM_PDF=1 か force のときだけ。"""
-    refs = bom.note_refs([i["text"] for i in items], own_no)
+    refs = {"note_refs": bom.note_refs([i["text"] for i in items], own_no),
+            "assembly_refs": bom.assembly_refs(items, own_no)}
+    refs = {k: v for k, v in refs.items() if v}
     if not (CONFIG.bom_pdf or force):
         return [], refs
     try:
@@ -129,7 +131,7 @@ def parse(data: bytes, path: str, force_bom: bool = False) -> tuple[dict, dict[i
             f["file_title"] = fields.get("title", "")
             pconf = 0.75 if p["tb_codes"] else 0.4
             rows, refs = _bom(p["items"], f["drawing_no"], force_bom)
-            attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5], **({"note_refs": refs} if refs else {})}
+            attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5], **refs}
             drawings.append({"page_no": p["page_no"],
                              "drawing": _drawing(f, "ocr" if p["text_source"] == "ocr" else source, pconf,
                                                  p["scanned"] and p["text_source"] != "ocr", attrs),
@@ -141,7 +143,7 @@ def parse(data: bytes, path: str, force_bom: bool = False) -> tuple[dict, dict[i
             fields["drawing_no"] = pages[0]["tb_codes"][0]
             conf = 0.75
         rows, refs = _bom(pages[0]["items"] if pages else [], fields.get("drawing_no", ""), force_bom)
-        attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else [], **({"note_refs": refs} if refs else {})}
+        attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else [], **refs}
         drawings.append({"page_no": 1, "drawing": _drawing(fields, source, conf, needs_ocr, attrs),
                          "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]} for p in pages],
                          "bom": rows})

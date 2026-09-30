@@ -122,8 +122,9 @@ def print_bom(path, dr):
     d = dr["drawing"]
     rows = dr.get("bom") or []
     refs = d.get("attributes", {}).get("note_refs") or []
+    parents = d.get("attributes", {}).get("assembly_refs") or []
     print(f"■ {path}  p{dr['page_no']}  図番 {d.get('drawing_no') or '（不明）'}  部品表 {len(rows)} 行"
-          + (f"  注記の参照図番 {' '.join(refs)}" if refs else ""))
+          + (f"  注記の参照図番 {' '.join(refs)}" if refs else "") + (f"  組立図番 {' '.join(parents)}" if parents else ""))
     for r in rows:
         dims = "×".join(x for x in (r.get("thickness"), r.get("width"), r.get("length")) if x)
         print(f"  {r['item_no']:>3} | {r['part_no'][:22]:<22} | {r['name'][:30]:<30} | {r['qty']:>4} | {r['material'][:10]:<10} | {dims}"
@@ -144,7 +145,7 @@ def bomtest(folder, kind, limit, every):
     with out.open("w", newline="", encoding="utf-8-sig") as fh:  # Excel で文字化けしないよう BOM 付き UTF-8
         w = csv.writer(fh)
         w.writerow(["ファイル", "ページ", "図番", "No", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ",
-                    "関連図面", "信頼度", "注記の参照図番"])
+                    "関連図面", "信頼度", "注記の参照図番", "組立図番"])
         for rel, _size, _mtime in source.walk(root, use_include=not folder):
             if not rel.lower().endswith("." + kind):
                 continue
@@ -163,6 +164,7 @@ def bomtest(folder, kind, limit, every):
             for dr in res["drawings"]:
                 rows = dr.get("bom") or []
                 refs = dr["drawing"].get("attributes", {}).get("note_refs") or []
+                parents = dr["drawing"].get("attributes", {}).get("assembly_refs") or []
                 print_bom(full, dr)
                 stats["with_bom"] += bool(rows)
                 stats["rows"] += len(rows)
@@ -171,7 +173,7 @@ def bomtest(folder, kind, limit, every):
                     w.writerow([full, dr["page_no"], dr["drawing"].get("drawing_no", ""), r.get("item_no", ""),
                                 r.get("part_no", ""), r.get("name", ""), r.get("qty", ""), r.get("material", ""),
                                 r.get("thickness", ""), r.get("width", ""), r.get("length", ""), r.get("ref_drawing_no", ""),
-                                r.get("confidence", ""), " ".join(refs)])
+                                r.get("confidence", ""), " ".join(refs), " ".join(parents)])
             if stats["files"] >= limit:
                 break
     print(f"\n読んだファイル {stats['files']} 件 / 部品表あり {stats['with_bom']} 件 / 行 {stats['rows']} / "

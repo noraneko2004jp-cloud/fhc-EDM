@@ -1,4 +1,5 @@
-"""関連図面：部品表の「図番又は品番」と注記の参照図番（「…は HUCP101040 による」）から、図面どうしをつなぐ。
+"""関連図面：部品表の「図番又は品番」、注記の参照図番（「…は HUCP101040 による」）、
+表題欄の「組立図番」（単品図面に書かれた親の組立図）から、図面どうしをつなぐ。
 
 保存時に関連表を作るのではなく、表示のたびに図番で引く（相手の図面が後から解析されても、すぐにつながるように）。
 どちらの向きも、見る人の権限（access.visible）で絞る。
@@ -32,7 +33,16 @@ def uses(user, d, bom):
     found = _by_no(user, list(refs), d.pk)
     for r in refs.values():
         r["drawings"] = found.get(r["no"], [])
-    return list(refs.values())
+    out = list(refs.values())
+    # 子の単品図面の表題欄「組立図番」にこの図番が書かれているもの（部品表に載っていない部品も拾える）
+    if d.drawing_no:
+        listed = {x.pk for r in out for x in r["drawings"]}
+        kids = (access.visible(user, Drawing.objects.select_related("file"))
+                .filter(attributes__assembly_refs__contains=[d.drawing_no]).exclude(pk=d.pk).order_by("drawing_no")[:200])
+        for x in kids:
+            if x.pk not in listed:
+                out.append({"no": x.drawing_no, "via": "組立図番", "rows": [], "drawings": [x]})
+    return out
 
 
 def used_by(user, d, limit=100):
@@ -54,4 +64,11 @@ def used_by(user, d, limit=100):
         if x.pk not in seen:
             seen.add(x.pk)
             out.append({"drawing": x, "via": "注記", "row": None})
+    # この図面の表題欄「組立図番」に書かれた親の組立図
+    attrs = d.attributes if isinstance(d.attributes, dict) else {}
+    for no, xs in _by_no(user, attrs.get("assembly_refs") or [], d.pk).items():
+        for x in xs:
+            if x.pk not in seen:
+                seen.add(x.pk)
+                out.append({"drawing": x, "via": "組立図番", "row": None})
     return out[:limit]

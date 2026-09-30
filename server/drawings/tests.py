@@ -537,6 +537,15 @@ class BomRelationTests(TestCase):
         self.assertEqual(summary[0][0], "HDBY003930")
         self.assertTrue(AuditLog.objects.filter(action="export", target__startswith="部品表まとめ").exists())
 
+    def test_assembly_refs_link_both_ways(self):
+        parent = self.post_result("図面/HDZY007950.dxf", "HDZY007950", [])
+        part = self.post_result("図面/HDZY007970.dxf", "HDZY007970", [])
+        Drawing.objects.filter(pk=part.pk).update(attributes={"assembly_refs": ["HDZY007950"]})
+        r = self.client.get(f"/d/{part.pk}/")
+        self.assertEqual([(u["drawing"].pk, u["via"]) for u in r.context["used_by"]], [(parent.pk, "組立図番")])
+        r = self.client.get(f"/d/{parent.pk}/")
+        self.assertEqual([(u["drawings"][0].pk, u["via"]) for u in r.context["uses"]], [(part.pk, "組立図番")])
+
     def test_guest_does_not_see_hidden_relations(self):
         panel = self.post_result("物件/山田様 契約書.dxf", "HDBY003920",
                                  [{"item_no": "1", "part_no": "HDBY003930", "ref_drawing_no": "HDBY003930"}])
