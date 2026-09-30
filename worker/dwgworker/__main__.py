@@ -5,6 +5,7 @@
   python -m dwgworker run          常駐：一定間隔で巡回しつつ、ジョブを処理し続ける
   python -m dwgworker parse FILE   1ファイルを解析して結果を表示（サーバー不要・動作確認用。スキャンPDFはOCRも行う）
                                   FILE は手元のファイルか、共有フォルダ内のパス。--bom で部品表を表の形で表示
+                                  --dump 保存先.json で OCR の結果（語ごとの位置）と罫線を保存（部品表の読み取りの調整用）
   python -m dwgworker bomtest [フォルダ] --kind dxf --limit 30 [--skip フォルダ名] [--match 正規表現]
                                   共有フォルダの図面の部品表を試しに読み、結果を表示して CSV に保存（サーバー・DB は変えない）
   python -m dwgworker probe [smb://サーバー/共有] [--minutes 10]
@@ -194,6 +195,7 @@ def main(argv=None):
     ap.add_argument("file", nargs="?")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--bom", action="store_true", help="parse：部品表を表の形で表示（スキャン PDF も読む）")
+    ap.add_argument("--dump", default="", help="parse：OCR の結果（語ごとの位置）と罫線を JSON に保存（部品表の読み取りの調整用）")
     ap.add_argument("--kind", choices=["dxf", "pdf"], default="dxf", help="bomtest：対象の種類")
     ap.add_argument("--limit", type=int, default=30, help="bomtest：読むファイル数")
     ap.add_argument("--every", type=int, default=1, help="bomtest：見つけたファイルを何件おきに読むか（広く散らして試す）")
@@ -213,10 +215,15 @@ def main(argv=None):
         from . import parse_dxf, parse_pdf
         p = Path(a.file)
         data = p.read_bytes() if p.exists() else source.read_bytes(a.file)  # 手元になければ共有フォルダから
+        debug = {} if a.dump else None
         if p.suffix.lower() == ".dxf":
             res, thumbs = parse_dxf.parse(data, a.file)
         else:
-            res, thumbs = parse_pdf.parse(data, a.file, force_bom=a.bom)
+            res, thumbs = parse_pdf.parse(data, a.file, force_bom=a.bom or bool(a.dump), debug=debug)
+        if a.dump:
+            debug.update({"file": a.file, "drawings": res["drawings"]})
+            Path(a.dump).write_text(json.dumps(debug, ensure_ascii=False, default=float), encoding="utf-8")
+            print(f"OCR の結果と罫線を {Path(a.dump).resolve()} に保存しました")
         if a.bom:
             for dr in res["drawings"]:
                 print_bom(a.file, dr)

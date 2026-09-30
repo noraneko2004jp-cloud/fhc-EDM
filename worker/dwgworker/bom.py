@@ -41,7 +41,7 @@ ANCHOR_WORDS = ["図番又は品番", "図番または品番", "図番・品番"
 # 見出しの飾り・2 段目にだけ出る語
 HEADER_NOISE = {"+新見出", "-旧図番号", "新見出", "旧図番号", "-図番号", "図番号", "番号", "出", "見", "図", "番", "号", "特記",
                 "材料寸法", "材料", "寸法", "新", "旧", "+新", "-旧", "新旧", "+", "-", "記", "特", "称", "名", "格", "規",
-                "集成", "取付", "部品", "単一", "給", "実", "社内外"}
+                "集成", "取付", "部品", "単一", "給", "実", "社内外", "材", "料", "寸", "法", "員", "数", "質", "量"}
 # 表題欄にだけある語。これを含む行は部品表の見出しにしない
 TITLEBLOCK_MARKERS = ["組立図番", "適用型式", "認可", "点検", "製図", "年月日", "尺度", "表面処理", "得意先", "製番", "USER", "GROUP"]
 _WORD_TO_COL = sorted(((unicodedata.normalize("NFKC", w).upper(), c) for c, ws in HEADER_WORDS.items() for w in ws),
@@ -423,6 +423,33 @@ def _table(items, anchor, others, vlines):
     return best
 
 
+def cells_from_ocr(items, vlines=()) -> list[dict]:
+    """OCR の結果（1 つのまとまりに隣の欄の文字まで入っていることがある）を、欄ごとの文字に分け直す。
+    語（tokens）ごとの位置を使い、近い語はつなげるが、罫線をまたいではつなげない。tokens がない item はそのまま。"""
+    out = []
+    for it in items:
+        toks = it.get("tokens")
+        if not toks:
+            out.append(it)
+            continue
+        group = None
+        for tk in toks:
+            h = max(tk.get("h") or it.get("h") or 1.0, 1e-6)
+            if group is not None:
+                gap_lo, gap_hi = group["x1"], tk["x"]
+                crosses = any(gap_lo - h * 0.2 <= x <= gap_hi + h * 0.2 and a <= tk["y"] + h * 0.5 <= b
+                              for x, a, b in vlines)
+                if gap_hi - gap_lo < h * 0.8 and not crosses:
+                    group["text"] += " " + tk["text"]
+                    group["x1"] = tk["x"] + tk["w"]
+                    continue
+                out.append({k: v for k, v in group.items() if k != "x1"})
+            group = {"text": tk["text"], "x": tk["x"], "y": tk["y"], "h": h, "x1": tk["x"] + tk["w"]}
+        if group is not None:
+            out.append({k: v for k, v in group.items() if k != "x1"})
+    return out
+
+
 def _ref_no(part: str) -> str:
     """品番の列の文字が図番そのもの（先頭が図番で、後ろは空白か枝番）のときだけ関連図面にする。
     「0280-RG-TS-2311-16KG」のような購入品・塗料の品番の一部を図番と取り違えない。"""
@@ -449,7 +476,8 @@ def extract(items, vlines=None) -> list[dict]:
     out, seen = [], set()
     for rows in tables:
         for r in rows:
-            part = _clean(r.get("part_no"))
+            # OCR が品番の欄の点線を「.」「,」と読んだもの（HC.Z.1.D.9.0.0.2.4）を詰める
+            part = titleblock.compact_codes(_clean(r.get("part_no")))
             item_no = _clean(r.get("item_no"))
             subs = sorted((k for k in r if _QTYN.match(k)), key=lambda k: int(k[3:]))
             if subs:  # 枝番ごとの員数

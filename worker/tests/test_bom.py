@@ -253,3 +253,49 @@ class BomVariantTests(unittest.TestCase):
         self.assertEqual((rows[0]["qty"], rows[0]["note"]), ("1", "枝番別の員数: 1 / 2 / - / 1"))
         self.assertEqual((rows[1]["qty"], rows[1]["note"]), ("1", "枝番別の員数: - / - / 1"))
         self.assertEqual((rows[0]["thickness"], rows[0]["length"]), ("050", "1930"))  # 見出しの段が崩れない
+
+
+def as_ocr(items, vlines):
+    """様式の表の文字を、OCR の結果のような形にする：同じ高さの文字を 1 つのまとまりにし、語ごとの位置を tokens に。
+    （Vision は隣り合う欄の文字を 1 つのまとまりとして返すことがある）"""
+    from dwgworker import bom as b
+    out = []
+    for ln in b._lines(items):
+        toks = []
+        for it in ln["items"]:
+            w = b._width(it["text"], it["h"])
+            for n, word in enumerate(it["text"].split()):
+                toks.append({"text": word, "x": it["x"] + n * 0.01, "y": it["y"], "w": w, "h": it["h"]})
+        out.append({"text": " ".join(t["text"] for t in toks), "x": toks[0]["x"], "y": ln["y"], "h": ln["items"][0]["h"],
+                    "tokens": toks})
+    return out
+
+
+class BomOcrTests(unittest.TestCase):
+    def test_ocr_lines_are_split_by_rules(self):
+        items, vlines = tpl_drawing()
+        ocr = as_ocr(items, vlines)
+        self.assertTrue(any(len(o["tokens"]) > 5 for o in ocr))  # 行全体が 1 つのまとまり
+        rows = bom.extract(bom.cells_from_ocr(ocr, vlines), vlines)
+        self.assertEqual([r["item_no"] for r in rows], ["1", "2", "3", "4", "5", "6"])
+        r = {x["item_no"]: x for x in rows}
+        self.assertEqual((r["2"]["part_no"], r["2"]["material"], r["2"]["length"]), ("P/L", "0C1", "2438"))
+        self.assertEqual(r["1"]["ref_drawing_no"], "ZZAB100010")
+
+    def test_dotted_part_number(self):
+        items, vlines = tpl_table(0, 0, [(1, "H.C.Z.I.D.9.0.0.2.4", "カンキセン トリツケ", "1", "", "", "", "", "")], 2)
+        rows = bom.extract(items, vlines)
+        self.assertEqual((rows[0]["part_no"], rows[0]["ref_drawing_no"]), ("HCZID90024", "HCZID90024"))
+
+    def test_image_vertical_lines(self):
+        import numpy as np
+        from dwgworker import imagelines
+        img = np.full((3508, 4960), 255, np.uint8)
+        img[2000:3000, 1000:1003] = 0
+        for r in range(2000, 3000):  # 少し傾いた線
+            c = 2000 + (r - 2000) * 8 // 1000
+            img[r, c:c + 3] = 0
+        img[2500:2520, 3000:3002] = 0  # 文字の画（短い）は線にしない
+        ls = imagelines.vertical_lines(img, 1190.55, 841.89)
+        self.assertEqual([round(x) for x, _, _ in ls], [240, 481])
+        self.assertAlmostEqual(ls[0][2] - ls[0][1], 240.0, delta=1)

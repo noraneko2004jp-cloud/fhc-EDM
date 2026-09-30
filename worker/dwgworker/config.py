@@ -35,6 +35,16 @@ def _list(key, default):
     return [x.strip() for x in os.environ.get(key, default).split(",") if x.strip()]
 
 
+DRAWING_NO_DEFAULT = r"(?<![A-Z])[A-Z]{1,5}-?\d{3,8}(?:X{2,6})?(?:-\d{1,3})?(?:[A-Z](?![A-Z]))?|(?<!\d)\d{10}(?!\d)"
+_DRAWING_NO_OLD = r"[A-Z]{1,4}-?\d{3,8}(?:X{2,6})?(?:-\d{1,3})?[A-Z]?|(?<!\d)\d{10}(?!\d)"
+
+
+def _drawing_no_regex() -> str:
+    """.env の DRAWING_NO_REGEX。以前の既定値（英字 4 文字まで）のままなら新しい既定値にする。"""
+    v = os.environ.get("DRAWING_NO_REGEX", "").strip()
+    return DRAWING_NO_DEFAULT if not v or v == _DRAWING_NO_OLD else v
+
+
 @dataclass
 class Config:
     server_url: str = os.environ.get("SERVER_URL", "http://128.131.250.252:8000").rstrip("/")
@@ -50,7 +60,8 @@ class Config:
     # 巡回から外すフォルダ（部分一致、カンマ区切り）
     exclude: list = field(default_factory=lambda: _list("SCAN_EXCLUDE", "~$,/.Trash,/#recycle,/$RECYCLE.BIN"))
     # 図番の形（社内規則に合わせて .env で上書きする）
-    drawing_no_regex: str = os.environ.get("DRAWING_NO_REGEX", r"[A-Z]{1,4}-?\d{3,8}(?:X{2,6})?(?:-\d{1,3})?[A-Z]?|(?<!\d)\d{10}(?!\d)")
+    # 図番：英字 1〜5 文字（HCZGG90104 のような 5 文字も）＋数字。英字の途中からは始めない
+    drawing_no_regex: str = _drawing_no_regex()
     dxf_fallback_font: str = os.environ.get("DXF_FALLBACK_FONT", "")
     # スキャン PDF の OCR（macOS Vision）。1 ファイルで OCR する最大ページ数
     ocr_enabled: bool = os.environ.get("OCR_ENABLED", "1") not in ("0", "false", "no")

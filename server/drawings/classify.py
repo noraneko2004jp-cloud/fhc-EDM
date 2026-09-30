@@ -53,7 +53,7 @@ def model_of(path: str, attrs: dict | None = None) -> tuple[str, str]:
     return (family.group(0) if family else code)[:16], code
 
 
-_NO = re.compile(r"^([A-Z]{1,4})(-?)(\d+)(X*)(-\d{1,3})?")
+_NO = re.compile(r"^([A-Z]{1,5})(-?)(\d+)(X*)(-\d{1,3})?")
 
 
 def series_of(drawing_no: str) -> tuple[str, str]:
