@@ -145,7 +145,7 @@ def bomtest(folder, kind, limit, every):
     with out.open("w", newline="", encoding="utf-8-sig") as fh:  # Excel で文字化けしないよう BOM 付き UTF-8
         w = csv.writer(fh)
         w.writerow(["ファイル", "ページ", "図番", "No", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ",
-                    "関連図面", "信頼度", "注記の参照図番", "組立図番"])
+                    "関連図面", "信頼度", "注記の参照図番", "組立図番", "備考"])
         for rel, _size, _mtime in source.walk(root, use_include=not folder):
             if not rel.lower().endswith("." + kind):
                 continue
@@ -173,7 +173,7 @@ def bomtest(folder, kind, limit, every):
                     w.writerow([full, dr["page_no"], dr["drawing"].get("drawing_no", ""), r.get("item_no", ""),
                                 r.get("part_no", ""), r.get("name", ""), r.get("qty", ""), r.get("material", ""),
                                 r.get("thickness", ""), r.get("width", ""), r.get("length", ""), r.get("ref_drawing_no", ""),
-                                r.get("confidence", ""), " ".join(refs), " ".join(parents)])
+                                r.get("confidence", ""), " ".join(refs), " ".join(parents), r.get("note", "")])
             if stats["files"] >= limit:
                 break
     print(f"\n読んだファイル {stats['files']} 件 / 部品表あり {stats['with_bom']} 件 / 行 {stats['rows']} / "

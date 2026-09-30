@@ -98,7 +98,8 @@ def _cells(line_items, merge=True):
     for it in line_items:
         h = _h(it)
         w = _width(unicodedata.normalize("NFKC", it["text"]), h)
-        if merge and cells and it["x"] - cells[-1]["x1"] < h * 1.2:
+        both_num = cells and _clean(it["text"]).isdigit() and _clean(cells[-1]["text"]).split()[-1].isdigit()
+        if merge and cells and it["x"] - cells[-1]["x1"] < h * 1.2 and not both_num:  # 数字どうしは別の欄
             c = cells[-1]
             gap = " " if it["x"] - c["x1"] > h * 0.6 else ""
             c["text"] += gap + it["text"]
@@ -142,9 +143,11 @@ def _headerish(cells):
     if not cells or _has_marker(cells):
         return False
     keys = [_key(c["text"]) for c in cells]
-    if any(ch.isdigit() for k in keys for ch in k):
-        return False
     hits = sum(1 for k in keys if k in HEADER_NOISE or any(w in k for w in _WORDS))
+    nums = [w for c in cells for w in _clean(c["text"]).split() if any(ch.isdigit() for ch in w)]
+    if nums:
+        # 枝番の見出し（140 150 160 170 など）が「特記・厚さ・幅…」と同じ段にある図面：短い数字だけなら見出しの段とみなす
+        return all(re.fullmatch(r"\d{1,4}", w) for w in nums) and hits >= 3 and hits >= (len(keys) - len(nums)) * 0.5
     return hits >= max(1, len(keys) * 0.6)
 
 
@@ -219,6 +222,15 @@ def _label(bounds, cols, h):
         i = labels.index("part_no")
         if i > 0 and spans[i - 1][2] is None:
             spans[i - 1][2] = "item_no"
+    # 員数の欄の中の細い区切り：枝番（HCP4419140ｰ70 など）ごとの員数の欄。2 つ目以降を qty2, qty3… にする
+    labels = [s[2] for s in spans]
+    if "qty" in labels:
+        n = 2
+        for s in spans[labels.index("qty") + 1:]:
+            if s[2] is not None:
+                break
+            s[2] = f"qty{n}"
+            n += 1
     return [(a, b, c) for a, b, c, _ in spans]
 
 
@@ -227,12 +239,15 @@ def _assign_by_lines(cells, spans, h):
     for c in cells:
         x = c["x0"] + h * 0.3
         col = next((lab for a, b, lab in spans if a <= x < b), None)
-        if col is None or col not in STORED_COLS:
+        if col is None or (col not in STORED_COLS and not _QTYN.match(col)):
             continue
-        if col == "item_no" and not _NUM.match(c["text"].strip()):
+        if col == "item_no" and not _NUM.match(_clean(c["text"])):
             continue
         out[col] = (out.get(col, "") + " " + c["text"]).strip()
     return out
+
+
+_QTYN = re.compile(r"^qty\d+$")
 
 
 def _assign_by_header(cells, cols):
@@ -268,9 +283,13 @@ def _kind(row):
     keys = {k for k, v in row.items() if v and not k.startswith("_")}
     if not keys:
         return "empty"
+    if not row.get("part_no") and _key(row.get("name", "")) in HEADER_NOISE | _WORDS:
+        return "header"  # 見出しの段の続き（「特記」の欄と、枝番の見出し 140 など）
+    if keys and all(_QTYN.match(k) for k in keys - {"qty"}) and not row.get("part_no") and not row.get("name"):
+        return "extra" if keys - {"qty"} or row.get("qty") else "empty"
     if keys == {"item_no"} or (keys == {"part_no"} and _NUM.match(row["part_no"])):
         return "num"
-    if keys <= {"qty", "material", "thickness", "width", "length", "note"}:
+    if all(k in {"qty", "material", "thickness", "width", "length", "note"} or _QTYN.match(k) for k in keys):
         return "extra"  # 2 段の高さの行で、員数などだけが行の真ん中に置かれたもの
     if (row.get("qty") and _qty(row["qty"])) or (row.get("part_no") and (row.get("name") or row.get("material"))):
         return "row"
@@ -305,7 +324,7 @@ def _rows(lines, start, step, assign, x_lo, x_hi, pitch, y_end=None):
             continue
         row = _fix_lead_num(assign(_cells(its, merge=False)))
         kind = _kind(row)
-        if kind == "empty":
+        if kind in ("empty", "header"):
             pass
         elif kind == "other":
             misses += 1
@@ -431,7 +450,15 @@ def extract(items, vlines=None) -> list[dict]:
     for rows in tables:
         for r in rows:
             part = _clean(r.get("part_no"))
-            item_no = (r.get("item_no") or "").strip()
+            item_no = _clean(r.get("item_no"))
+            subs = sorted((k for k in r if _QTYN.match(k)), key=lambda k: int(k[3:]))
+            if subs:  # 枝番ごとの員数
+                per = [_qty(r.get("qty"))] + [_qty(r.get(f"qty{n}")) for n in range(2, int(subs[-1][3:]) + 1)]
+                last = max(i for i, v in enumerate(per) if v) if any(per) else -1
+                if last >= 1:
+                    r["note"] = (_clean(r.get("note")) + " 枝番別の員数: " + " / ".join(v or "-" for v in per[:last + 1])).strip()
+                if not _qty(r.get("qty")):
+                    r["qty"] = next((v for v in per if v), "")
             key = (item_no, part, _clean(r.get("name")))
             if key in seen:
                 continue

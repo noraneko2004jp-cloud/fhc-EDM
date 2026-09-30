@@ -237,3 +237,19 @@ class BomTemplateTests(unittest.TestCase):
         self.assertEqual([r["item_no"] for r in d["bom"]], ["1", "2", "3", "4", "5", "6"])
         self.assertEqual(d["bom"][4]["length"], "2055")
         self.assertEqual(d["drawing"]["attributes"].get("assembly_refs"), ["ZZAB000010"])
+
+
+class BomVariantTests(unittest.TestCase):
+    def test_branch_number_qty_columns(self):
+        """枝番（-140〜-170 など）ごとに員数の欄が分かれた図面。見出しの段に枝番の見出し（140 150…）がある。"""
+        items, vlines = tpl_table(0, 0, [
+            (1, "P/X", "ﾃｽﾄｶﾗｰ-40×17×0.5", "1", "", "050", "", "1930", ""),
+            ("２", "P/X", "ﾃｽﾄｶﾗｰ-40×17×0.5", "", "", "050", "", "1900", ""),  # 全角の行番号、1 つ目の枝番には使わない
+        ], 4)
+        items += [t("140", 136.5, 3.0, 3.2), t("150", 145.5, 3.0, 3.2), t("160", 151.5, 3.0, 3.2), t("170", 157.5, 3.0, 3.2)]
+        items += [t("2", 145.5, 7.9, 3.2), t("1", 157.5, 7.9, 3.2), t("1", 151.5, 15.9, 3.2)]
+        rows = bom.extract(items, vlines)
+        self.assertEqual([r["item_no"] for r in rows], ["1", "2"])
+        self.assertEqual((rows[0]["qty"], rows[0]["note"]), ("1", "枝番別の員数: 1 / 2 / - / 1"))
+        self.assertEqual((rows[1]["qty"], rows[1]["note"]), ("1", "枝番別の員数: - / - / 1"))
+        self.assertEqual((rows[0]["thickness"], rows[0]["length"]), ("050", "1930"))  # 見出しの段が崩れない

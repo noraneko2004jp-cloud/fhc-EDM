@@ -146,18 +146,18 @@ def bom_xlsx(request, pk):
     ws.title = "部品表"
     ws.append([f"{d.drawing_no} Rev.{d.revision}", d.title])
     ws.append([])
-    head = ["No.", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ", "関連図面", "信頼度"]
+    head = ["No.", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ", "関連図面", "信頼度", "備考"]
     ws.append(head)
     for c in ws[3]:
         c.font = Font(bold=True)
     low = PatternFill("solid", fgColor="FFF2CC")
     for b in d.bom_items.all():
         ws.append([b.item_no or b.row, b.part_no, b.name, float(b.qty) if b.qty is not None else None,
-                   b.material, b.thickness, b.width, b.length, b.ref_drawing_no, round(b.confidence, 2)])
+                   b.material, b.thickness, b.width, b.length, b.ref_drawing_no, round(b.confidence, 2), b.note])
         if b.confidence < 0.8:
             for c in ws[ws.max_row]:
                 c.fill = low
-    for col, w in zip("ABCDEFGHIJ", (6, 18, 36, 7, 10, 8, 9, 9, 14, 7)):
+    for col, w in zip("ABCDEFGHIJK", (6, 18, 36, 7, 10, 8, 9, 9, 14, 7, 30)):
         ws.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)
@@ -191,7 +191,7 @@ def bom_export(request):
     ws.append([f"DWG-FIND 部品表（{browse.VIEWS[st['v']]}：{cond}）", f"図面 {len(ids)} 枚"])
     ws.append([])
     head = ["図番", "図面の名称", "型式", "ファイル", "No.", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ",
-            "関連図面", "信頼度"]
+            "関連図面", "信頼度", "備考"]
     ws.append(head)
     for c in ws[3]:
         c.font = Font(bold=True)
@@ -201,7 +201,7 @@ def bom_export(request):
         d = b.drawing
         qty = float(b.qty) if b.qty is not None else None
         ws.append([d.drawing_no, d.title, d.model_code if d.model_code != "_" else "", d.file.path, b.item_no or b.row, b.part_no,
-                   b.name, qty, b.material, b.thickness, b.width, b.length, b.ref_drawing_no, round(b.confidence, 2)])
+                   b.name, qty, b.material, b.thickness, b.width, b.length, b.ref_drawing_no, round(b.confidence, 2), b.note])
         if b.confidence < 0.8:
             for c in ws[ws.max_row]:
                 c.fill = low
@@ -211,7 +211,7 @@ def bom_export(request):
                                          "material": b.material})
             s["drawings"].add(d.drawing_no or d.file.filename)
             s["qty"] += qty or 0
-    for col, w in zip("ABCDEFGHIJKLMN", (14, 24, 10, 40, 5, 18, 34, 6, 9, 7, 8, 8, 14, 7)):
+    for col, w in zip("ABCDEFGHIJKLMNO", (14, 24, 10, 40, 5, 18, 34, 6, 9, 7, 8, 8, 14, 7, 30)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A4"
     ws2 = wb.create_sheet("集計")
