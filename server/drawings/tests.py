@@ -303,7 +303,14 @@ class DocTypeTests(TestCase):
         self.assertEqual(t("資料/scan002.pdf", text="工事請負契約書 契約金額 金 1,000,000 円 収入印紙"), "contract")
         self.assertEqual(t("資料/scan003.pdf", text="地番 123-4 地積 250.00m2 公図 写し"), "site")
         self.assertEqual(t("資料/scan004.pdf", text="図番 HB0011 尺度 1/10 材質 SS400"), "drawing")
-        self.assertEqual(t("資料/scan005.pdf", text="お知らせ"), "other")  # 迷ったら other（ゲストに見せない）
+        self.assertEqual(t("資料/scan005.pdf", text="お知らせ"), "other")
+        # 「確認申請」の中の「申請」は別の語として数えない（1 語だけでは申請書類にしない）
+        self.assertEqual(t("資料/scan006.pdf", text="確認申請"), "other")
+        self.assertEqual(t("資料/scan007.pdf", text="契約書"), "other")
+        # ファイル名はフォルダ名より優先
+        self.assertEqual(t("物件/見積/公図.pdf"), "site")
+        from .classify import explain
+        self.assertEqual(explain("物件/見積/a.pdf")[1], "フォルダ名「見積」（見積）")  # 迷ったら other（ゲストに見せない）
 
     def test_manual_fix_is_kept(self):
         from datetime import datetime, timezone

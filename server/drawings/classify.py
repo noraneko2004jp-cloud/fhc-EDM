@@ -100,36 +100,58 @@ DRAWING_NAME_WORDS = ["図面一式", "組立図", "部品図", "製作図", "�
 TITLEBLOCK_WORDS = ["図番", "尺度", "SCALE", "DRAWING NO", "DWG NO", "三角法", "材質", "製図", "検図", "承認"]
 
 
+def _found(text, words):
+    """本文にある語。「確認申請」と「申請」のように、長い語の一部として出ただけの語は数えない。"""
+    hit = [w for w in words if w in text]
+    return [w for w in hit if not any(w != o and w in o for o in hit)]
+
+
 def _hits(text, words):
-    return sum(1 for w in words if w in text)
+    return len(_found(text, words))
 
 
-def doc_type_of(path, drawing_no="", source="", confidence=0.0, kind="", text="") -> str:
-    """文書種別を返す。順番：
-    1. フォルダ名・ファイル名の言葉（契約・申請・敷地など）
-    2. ファイル名の図面らしい語、表題欄・ファイル名の規則で読めた図番（信頼度 0.75 以上）→ 製品図面
-    3. 本文の言葉（同じ種別の語が 2 つ以上）
-    4. DXF、図番あり、本文に表題欄の語が 2 つ以上 → 製品図面
-    5. それ以外 → その他
+def explain(path, drawing_no="", source="", confidence=0.0, kind="", text="") -> tuple[str, str]:
+    """(文書種別, 判定理由) を返す。順番：
+    1. ファイル名の言葉（契約・申請・敷地など）
+    2. フォルダ名の言葉
+    3. ファイル名の図面らしい語、表題欄・ファイル名の規則で読めた図番（信頼度 0.75 以上）→ 製品図面
+    4. 本文の言葉（同じ種別の別々の語が 2 つ以上）
+    5. DXF、図番あり、本文に表題欄の語が 2 つ以上 → 製品図面
+    6. それ以外 → その他
     """
     p = PurePosixPath(path or "")
     name = norm(p.stem)
-    folders = norm("/".join(p.parts[:-1]))
+    parts = [norm(x) for x in p.parts[:-1]]
     for t, words in TYPE_WORDS.items():
-        if any(w in name for w in words) or any(w in folders for w in words):
-            return t
-    if any(w in name for w in DRAWING_NAME_WORDS):
-        return DRAWING
+        w = next((w for w in words if w in name), None)
+        if w:
+            return t, f"ファイル名「{w}」"
+    for t, words in TYPE_WORDS.items():
+        for part in reversed(parts):
+            w = next((w for w in words if w in part), None)
+            if w:
+                return t, f"フォルダ名「{w}」（{part}）"
+    w = next((w for w in DRAWING_NAME_WORDS if w in name), None)
+    if w:
+        return DRAWING, f"ファイル名「{w}」"
     if drawing_no and (source in ("attrib", "filename") or (confidence or 0) >= 0.75):
-        return DRAWING
+        return DRAWING, "図番（表題欄・ファイル名）"
     body = norm((text or "")[:6000])
-    scores = {t: _hits(body, words) for t, words in TYPE_WORDS.items()}
-    best = max(scores, key=lambda t: scores[t])
-    if scores[best] >= 2:
-        return best
-    if (kind or "").lower() == "dxf" or drawing_no or _hits(body, TITLEBLOCK_WORDS) >= 2:
-        return DRAWING
-    return OTHER
+    found = {t: _found(body, words) for t, words in TYPE_WORDS.items()}
+    best = max(found, key=lambda t: len(found[t]))
+    if len(found[best]) >= 2:
+        return best, "本文「" + "・".join(found[best][:3]) + "」"
+    if (kind or "").lower() == "dxf":
+        return DRAWING, "DXF"
+    if drawing_no:
+        return DRAWING, "図番（信頼度低）"
+    if _hits(body, TITLEBLOCK_WORDS) >= 2:
+        return DRAWING, "本文に表題欄の語"
+    return OTHER, "手がかりなし" if body.strip() else "本文なし（OCR未実施など）"
+
+
+def doc_type_of(*args, **kwargs) -> str:
+    return explain(*args, **kwargs)[0]
 
 
 def apply(drawing, text=None) -> None:
