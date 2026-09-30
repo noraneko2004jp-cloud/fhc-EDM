@@ -73,12 +73,13 @@ def _width(text, h):
     return sum(h * (1.0 if unicodedata.east_asian_width(ch) in "WFA" and not ch.isascii() else 0.5) for ch in text)
 
 
-def _lines(items):
+def _lines(items, tol_factor=0.55):
     """高さの近い文字を 1 行にまとめる（上から順）。隣り合う文字どうしの高さの差で鎖のようにつなぐので、
-    行番号（1.5 上）や質量（0.5 下）のように少しずれて置かれた文字も同じ行に入る。"""
+    行番号（1.5 上）や質量（0.5 下）のように少しずれて置かれた文字も同じ行に入る。
+    スキャン（OCR の枠は文字ごとに高さがばらつく）では tol_factor を大きめにする。"""
     if not items:
         return []
-    tol = statistics.median(_h(i) for i in items) * 0.55
+    tol = statistics.median(_h(i) for i in items) * tol_factor
     rows = []
     for it in sorted(items, key=lambda i: -i["y"]):
         if rows and rows[-1]["ylast"] - it["y"] <= tol:
@@ -460,6 +461,136 @@ def _ref_no(part: str) -> str:
     return ""
 
 
+# ---- スキャン図面：罫線の格子を先に見つけ、見出しは「だいたい合っていれば」でよい読み方 ----
+# OCR は見出しの文字をよく読み違える（図番又は品番 → 図 番 双 は & 番、名称/規格 → ik / 赴 格 など）ため
+COL_ORDER = ["item_no", "part_no", "name", "qty", "material", "thickness", "width", "length", "weight", "total"]
+
+
+def _fuzzy_col(text):
+    """見出しの文字（読み違いを含む）から列を当てる → (点数, 列)。語の字の半分以上（2 字以上）が入っていれば当てる。"""
+    k = _key(text)
+    best = (0.0, None)
+    if not k:
+        return best
+    for col, words in HEADER_WORDS.items():
+        for w in words:
+            chars = set(_key(w))
+            if len(chars) < 2:
+                continue
+            common = sum(1 for ch in chars if ch in k)
+            score = common / len(chars)
+            if common >= 2 and score >= 0.5 and score > best[0]:
+                best = (score, col)
+    return best
+
+
+def _join_vertical(vlines, tol_x, gap):
+    """同じ x（傾き・かすれで数画素ずれた）の縦の線の切れ端を 1 本につなぐ。"""
+    out = []
+    for x, a, b in sorted(vlines):
+        for m in reversed(out[-40:]):
+            if abs(m[0] - x) <= tol_x and a <= m[2] + gap and b >= m[1] - gap:
+                m[1], m[2] = min(m[1], a), max(m[2], b)
+                break
+        else:
+            out.append([x, a, b])
+    return [tuple(m) for m in out]
+
+
+def _grid_tables(items, vlines):
+    """見出しの文字が読めなくても、部品表の罫線の格子から表を読む（スキャン図面向け）。"""
+    if not items or not vlines:
+        return []
+    h = statistics.median(_h(i) for i in items)
+    vlines = _join_vertical(vlines, h * 0.25, h * 1.5)
+    longs = sorted([v for v in vlines if v[2] - v[1] >= h * 8], key=lambda v: v[2])
+    # 上端のそろった縦の線のまとまり＝表
+    groups, cur = [], []
+    for v in longs:
+        if cur and v[2] - cur[-1][2] > h * 1.2:
+            groups.append(cur)
+            cur = []
+        cur.append(v)
+    if cur:
+        groups.append(cur)
+    tables = []
+    for g in groups:
+        xs = sorted(v[0] for v in g)
+        if len(g) < 6 or xs[-1] - xs[0] < h * 40:
+            continue
+        # 表の下端（見出しの下の線）：いちばん多くの線がそろって終わる高さ。表の外枠は表題欄まで下りていることがある
+        bots = sorted(v[1] for v in g)
+        bottom = max(bots, key=lambda b: (sum(1 for x in bots if abs(x - b) <= h * 1.5), -b))
+        top = statistics.median(v[2] for v in g)
+        major = sorted(v for v in g if v[1] <= bottom + h * 1.5)        # 見出しまで下りている線＝列の境目
+        minor = [v for v in g if v[1] > bottom + h * 1.5]              # 見出しの上から始まる線＝欄の中の区切り
+        minor_bottoms = [v[1] for v in minor if v[1] <= bottom + h * 4]
+        head_top = statistics.median(minor_bottoms) if minor_bottoms else bottom + h * 2.2
+        bounds = []
+        for x in sorted(v[0] for v in major):
+            if not bounds or x - bounds[-1] > h * 0.6:
+                bounds.append(x)
+        if len(bounds) < 5:
+            continue
+        # 表の右端：図面の外枠と共通で、上の方まで伸びている線のことがある（上端がそろわないので別のまとまりになる）
+        edge = [v[0] for v in vlines if bounds[-1] + h * 1.5 < v[0] < bounds[-1] + h * 20
+                and v[1] <= head_top and v[2] >= top - h]
+        if edge:
+            bounds.append(min(edge))
+        spans = [[a, b, None, 0.0] for a, b in zip(bounds, bounds[1:])]
+        head = [i for i in items if bottom - h * 0.5 <= i["y"] <= head_top + h * 0.5 and bounds[0] <= i["x"] <= bounds[-1]]
+        for s in spans:
+            text = " ".join(i["text"] for i in sorted(head, key=lambda i: i["x"]) if s[0] <= i["x"] + _h(i) * 0.5 < s[1])
+            score, col = _fuzzy_col(text)
+            if col and col in COL_ORDER:
+                s[2], s[3] = col, score
+        # 同じ列が 2 か所なら点数の高い方
+        for col in COL_ORDER:
+            hit = [s for s in spans if s[2] == col]
+            for s in sorted(hit, key=lambda s: -s[3])[1:]:
+                s[2] = None
+        # 様式の列の順番で、読めなかった見出しを埋める（前後の列が分かっていて、間の数が合うとき）
+        known = [(n, COL_ORDER.index(s[2])) for n, s in enumerate(spans) if s[2]]
+        for (n0, c0), (n1, c1) in zip(known, known[1:]):
+            if n1 - n0 == c1 - c0 and n1 - n0 > 1:
+                for k in range(1, n1 - n0):
+                    spans[n0 + k][2] = COL_ORDER[c0 + k]
+        if known:
+            n_last, c_last = known[-1]
+            for k in range(1, len(spans) - n_last):
+                if c_last + k < len(COL_ORDER) and spans[n_last + k][2] is None:
+                    spans[n_last + k][2] = COL_ORDER[c_last + k]
+        labels = [s[2] for s in spans]
+        if "part_no" not in labels:
+            continue
+        if "item_no" not in labels:
+            i = labels.index("part_no")
+            if i > 0 and spans[i - 1][2] is None:
+                spans[i - 1][2] = "item_no"
+        # 員数の欄の中の区切り（枝番ごとの員数）
+        final = []
+        for a, b, lab, _ in spans:
+            subs = sorted(v[0] for v in minor if a + h * 0.5 < v[0] < b - h * 0.5)
+            if lab == "qty" and subs:
+                edges = [a] + subs + [b]
+                for n, (p, q) in enumerate(zip(edges, edges[1:])):
+                    final.append((p, q, "qty" if n == 0 else f"qty{n + 1}"))
+            else:
+                final.append((a, b, lab))
+        x_lo, x_hi = bounds[0] - h * 0.5, bounds[-1] + h * 0.5
+        sub = [i for i in items if x_lo <= i["x"] <= x_hi and head_top + h * 0.3 < i["y"] < top]
+        found = []
+        for ln in reversed(_lines(sub, 0.8)):  # 見出しに近い方（下）から
+            row = _fix_lead_num(_assign_by_lines(_cells(ln["items"], merge=False), final, h))
+            kind = _kind(row)
+            if kind not in ("empty", "header", "other"):
+                found.append({**row, "_y": ln["y"], "_kind": kind})
+        rows = _tidy(found)
+        if rows:
+            tables.append(rows)
+    return tables
+
+
 def extract(items, vlines=None) -> list[dict]:
     """部品表の行のリストを返す。見つからなければ []。図面の中に表が複数（続きの表）あれば、行番号順にまとめる。
     行: {item_no, part_no, name, qty, material, thickness, width, length, note, ref_drawing_no, raw_text, confidence}"""
@@ -471,6 +602,8 @@ def extract(items, vlines=None) -> list[dict]:
             if not any(abs(a["x"] - it["x"]) < _h(it) * 2 and abs(a["y"] - it["y"]) < _h(it) * 2 for a in anchors):
                 anchors.append(it)
     tables = [t for a in anchors if (t := _table(items, a, anchors, vlines or []))]
+    if not tables and vlines:
+        tables = _grid_tables(items, vlines)  # 見出しが読めないスキャン図面
     if not tables:
         return []
     out, seen = [], set()
