@@ -98,7 +98,7 @@ def _cells(line_items, merge=True):
     cells = []
     for it in line_items:
         h = _h(it)
-        w = _width(unicodedata.normalize("NFKC", it["text"]), h)
+        w = it.get("w") or _width(unicodedata.normalize("NFKC", it["text"]), h)  # OCR は実際の幅がある
         both_num = cells and _clean(it["text"]).isdigit() and _clean(cells[-1]["text"]).split()[-1].isdigit()
         if merge and cells and it["x"] - cells[-1]["x1"] < h * 1.2 and not both_num:  # 数字どうしは別の欄
             c = cells[-1]
@@ -238,10 +238,26 @@ def _label(bounds, cols, h):
 def _assign_by_lines(cells, spans, h, ocr=False):
     out = {}
     item_left = next((a for a, b, lab in spans if lab == "item_no"), None)
+    part_left = next((a for a, b, lab in spans if lab == "part_no"), None)
     for c in cells:
-        x = c["x0"] + h * 0.3
-        col = next((lab for a, b, lab in spans if a <= x < b), None)
         text = c["text"]
+        w = c["x1"] - c["x0"]
+        cw = w / max(1, len(text))  # 1 文字の幅
+        if (ocr and part_left is not None and c["x1"] > part_left + h and len(text) > 3
+                and part_left - c["x0"] >= max(cw * 0.8, h * 0.5)):
+            # OCR が行番号と品番を 1 つにした（「12HB03391990」「10P/Z」）：文字の位置で欄の境目で分ける。
+            # 品番の欄から少しはみ出して始まっただけのもの（「0016608250」）は分けない
+            k = max(1, min(3, round((part_left - c["x0"]) / cw)))
+            num = ocr_item_no(text[:k])
+            if _NUM.match(num) and re.fullmatch(r"[0-9IOl|]+", text[:k]):
+                out["item_no"] = num
+                out["part_no"] = (out.get("part_no", "") + " " + text[k:]).strip()
+            else:
+                out["part_no"] = (out.get("part_no", "") + " " + text).strip()
+            continue
+        # OCR の長い文字は中心の位置で欄を決める（行番号の欄から少しはみ出して始まる品番など）
+        x = c["x0"] + w / 2 if ocr and len(text) > 3 else c["x0"] + h * 0.3
+        col = next((lab for a, b, lab in spans if a <= x < b), None)
         if ocr and (col == "item_no" or (col is None and item_left is not None and x < item_left)):
             # 行番号：OCR の「I」「03」（〇印＋番号）など。行番号の左の欄（新旧の印）に入ったものも行番号に
             num = ocr_item_no(text)
@@ -450,6 +466,8 @@ def ocr_code(code: str) -> str:
     if re.fullmatch(r"[A-Z0-9.,]+", c) and len(re.findall(r"[.,]", c)) >= 2:
         c = re.sub(r"[.,]", "", c)
     c = re.sub(r"(?<=[A-Z])1(?=[A-Z])", "I", c)
+    if re.fullmatch(r"[A-Z0-9]{6,}[|/.,]+", c):  # 罫線や汚れを末尾の「|」「/」と読んだもの
+        c = re.sub(r"[|/.,]+$", "", c)
     c = re.sub(r"^([A-Z]{4})O(?=\d)", r"\g<1>0", c)
     return c
 
@@ -474,11 +492,17 @@ def cells_from_ocr(items, vlines=()) -> list[dict]:
                     group["text"] += " " + tk["text"]
                     group["x1"] = tk["x"] + tk["w"]
                     continue
-                out.append({k: v for k, v in group.items() if k != "x1"})
+                out.append(_close(group))
             group = {"text": tk["text"], "x": tk["x"], "y": tk["y"], "h": h, "x1": tk["x"] + tk["w"], "ocr": True}
         if group is not None:
-            out.append({k: v for k, v in group.items() if k != "x1"})
+            out.append(_close(group))
     return out
+
+
+def _close(group):
+    g = {k: v for k, v in group.items() if k != "x1"}
+    g["w"] = group["x1"] - group["x"]
+    return g
 
 
 def _ref_no(part: str) -> str:
@@ -515,16 +539,28 @@ def _fuzzy_col(text):
 
 
 def _join_vertical(vlines, tol_x, gap):
-    """同じ x（傾き・かすれで数画素ずれた）の縦の線の切れ端を 1 本につなぐ。"""
-    out = []
-    for x, a, b in sorted(vlines):
-        for m in reversed(out[-40:]):
-            if abs(m[0] - x) <= tol_x and a <= m[2] + gap and b >= m[1] - gap:
-                m[1], m[2] = min(m[1], a), max(m[2], b)
-                break
+    """同じ x（傾き・かすれで数画素ずれた）の縦の線の切れ端を 1 本につなぐ。
+    まず x の近いものをまとめ、その中で下から順に、隙間が gap 以内ならつなぐ。"""
+    cols = []
+    for v in sorted(vlines):
+        if cols and v[0] - cols[-1][-1][0] <= tol_x:
+            cols[-1].append(v)
         else:
-            out.append([x, a, b])
-    return [tuple(m) for m in out]
+            cols.append([v])
+    out = []
+    for col in cols:
+        x = statistics.median(v[0] for v in col)
+        cur = None
+        for _, a, b in sorted(col, key=lambda v: v[1]):
+            if cur and a <= cur[2] + gap:
+                cur[2] = max(cur[2], b)
+            else:
+                if cur:
+                    out.append(tuple(cur))
+                cur = [x, a, b]
+        if cur:
+            out.append(tuple(cur))
+    return out
 
 
 def _mode(values, tol):
@@ -597,10 +633,37 @@ def _grid_tables(items, vlines):
             kind = _kind(row)
             if kind not in ("empty", "header", "other"):
                 found.append({**row, "_y": ln["y"], "_kind": kind})
-        rows = _tidy(found)
+        rows = _renumber(_tidy(found))
         if rows:
             tables.append(rows)
     return tables
+
+
+def _renumber(rows):
+    """スキャンの行番号は OCR が読み飛ばす・読み違える（1 桁の数字、17 → 7 など）ので、行の位置から番号を決める。
+    様式の表は見出しのすぐ上から同じ間隔で積み上がるので、位置の順番＋ずれ（読めた行番号で多数決）を番号にする。"""
+    if len(rows) < 2:
+        return rows
+    ys = sorted(r["_y"] for r in rows)
+    diffs = [b - a for a, b in zip(ys, ys[1:]) if b - a > 0]
+    if not diffs:
+        return rows
+    pitch = min(statistics.median(diffs), min(diffs) * 1.5)
+    y0 = ys[0]
+    votes = {}
+    for r in rows:
+        pos = round((r["_y"] - y0) / pitch)
+        r["_pos"] = pos
+        n = r.get("item_no", "")
+        if n.isdigit():
+            votes[int(n) - pos] = votes.get(int(n) - pos, 0) + 1
+    offset = max(votes, key=lambda k: (votes[k], -abs(k - 1))) if votes else 1
+    if votes and votes[offset] < 2 and offset != 1:
+        offset = 1
+    for r in rows:
+        if r["_pos"] + offset >= 1:
+            r["item_no"] = str(r["_pos"] + offset)
+    return rows
 
 
 def _fill_by_template(spans):
