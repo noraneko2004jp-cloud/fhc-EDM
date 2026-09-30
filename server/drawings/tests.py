@@ -159,3 +159,34 @@ class SearchViewTests(TestCase):
         self.assertEqual(self.client.get(f"/d/{d.pk}/").status_code, 200)
         self.assertEqual(self.client.get(f"/d/{d.pk}/bom.xlsx").status_code, 200)
         self.assertEqual(AuditLog.objects.count(), 2)
+
+    def test_back_keeps_page_and_prev_next(self):
+        from datetime import datetime, timezone
+        from .text import build_search_text
+        for n in range(120):
+            f = SourceFile.objects.create(path=f"p/ZZ{n:04d}.pdf", kind="pdf", size=1, mtime=datetime.now(timezone.utc))
+            Drawing.objects.create(file=f, drawing_no=f"ZZ{n:04d}", search_text=build_search_text(f"ZZ{n:04d}"))
+        self.client.login(username="u", password="pw-12345678")
+        r = self.client.get("/", {"q": "ZZ", "kind": "pdf", "page": 2})
+        n, d, link = r.context["items"][0]
+        self.assertEqual((n, d.drawing_no), (50, "ZZ0050"))
+        self.assertIn("i=50", link)
+        r = self.client.get(f"/d/{d.pk}/{link}")
+        self.assertIn("page=2", r.context["back"])
+        self.assertIn("kind=pdf", r.context["back"])
+        self.assertTrue(r.context["back"].endswith(f"#d{d.pk}"))
+        nav = r.context["nav"]
+        self.assertEqual((nav["pos"], nav["total"]), (51, 120))
+        self.assertEqual((nav["prev"][0].drawing_no, nav["next"][0].drawing_no), ("ZZ0049", "ZZ0051"))
+        self.assertIn("i=49", nav["prev"][1])
+        # 最初の図面には「前」がない
+        first = Drawing.objects.get(drawing_no="ZZ0000")
+        r = self.client.get(f"/d/{first.pk}/", {"q": "ZZ", "i": 0})
+        self.assertNotIn("prev", r.context["nav"])
+        # 一覧から来ていない（i なし）ときは前後なし・戻り先は一覧
+        r = self.client.get(f"/d/{first.pk}/", {"q": "ZZ", "p": 3})
+        self.assertEqual(r.context["nav"], {})
+        self.assertIn("page=3", r.context["back"])
+        # ページ番号の並び
+        r = self.client.get("/", {"q": "ZZ"})
+        self.assertEqual(r.context["window"], [1, 2, 3])

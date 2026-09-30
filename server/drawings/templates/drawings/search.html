@@ -1,34 +1,49 @@
 {% extends "drawings/base.html" %}{% block content %}
-<form class="search" method="get">
-  <input id="q" name="q" value="{{ q }}" type="search" placeholder="図番・品名・部品番号・材質・フォルダ名で検索" aria-label="検索語">
-  <select id="kind" name="kind" aria-label="種類"><option value="">すべて</option>
+<form class="search" method="get" action="{% url 'index' %}">
+  <input id="q" name="q" value="{{ q }}" type="search" placeholder="図番・品名・部品番号・材質・フォルダ名で検索（/ キーで入力）" aria-label="検索語" autocomplete="off">
+  <select id="kind" name="kind" aria-label="種類" onchange="this.form.submit()"><option value="">すべて</option>
     <option value="dxf" {% if kind == "dxf" %}selected{% endif %}>DXF</option>
     <option value="pdf" {% if kind == "pdf" %}selected{% endif %}>PDF</option></select>
   <button type="submit">検索</button>
 </form>
 <div class="expand">
   {% if terms|length > 1 %}辞書で展開：{% for t in terms %}<span class="chip {% if not forloop.first %}syn{% endif %}">{{ t }}</span>{% endfor %}{% endif %}
-  <span style="margin-left:auto">{{ total }} 件</span>
+  <span style="margin-left:auto">{{ total }} 件{% if page.paginator.num_pages > 1 %}（{{ page.start_index }}〜{{ page.end_index }} 件目）{% endif %}</span>
 </div>
 {% if page.object_list %}
 <div class="grid">
-{% for d in page %}
-  <a class="card" href="{% url 'detail' d.pk %}{% if q %}?q={{ q|urlencode }}{% endif %}">
+{% for n, d, link in items %}
+  <a class="card" id="d{{ d.pk }}" href="{% url 'detail' d.pk %}{{ link }}">
     <div class="th">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のサムネイル" loading="lazy">{% else %}<span class="muted">プレビューなし</span>{% endif %}</div>
     <div class="meta">
-      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}</span></span>
+      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}{% if d.attributes.pages > 1 %} p{{ d.page_no }}/{{ d.attributes.pages }}{% endif %}</span></span>
       <span class="ellip" style="font-size:13px">{% if d.attributes.model %}<span class="muted">{{ d.attributes.model }}</span> {% endif %}{{ d.title|default:d.file.filename }}</span>
-      <span class="ellip muted" style="font-size:11.5px">{{ d.file.path }}</span>
+      <span class="ellip muted" style="font-size:11.5px" title="{{ d.file.path }}">{{ d.file.path }}</span>
     </div>
   </a>
 {% endfor %}
 </div>
-<nav class="pager">
-  {% if page.has_previous %}<a href="?q={{ q|urlencode }}&kind={{ kind }}&page={{ page.previous_page_number }}">← 前へ</a>{% endif %}
-  <span class="muted">{{ page.number }} / {{ page.paginator.num_pages }}</span>
-  {% if page.has_next %}<a href="?q={{ q|urlencode }}&kind={{ kind }}&page={{ page.next_page_number }}">次へ →</a>{% endif %}
+{% if page.paginator.num_pages > 1 %}
+<nav class="pager" aria-label="ページ">
+  {% if page.has_previous %}<a href="{{ page_qs|default:'?' }}{% if page_qs %}&{% endif %}page={{ page.previous_page_number }}" rel="prev">← 前へ</a>{% else %}<span class="muted">← 前へ</span>{% endif %}
+  {% for n in window %}{% if n is None %}<span class="muted">…</span>{% elif n == page.number %}<b aria-current="page">{{ n }}</b>{% else %}<a href="{{ page_qs|default:'?' }}{% if page_qs %}&{% endif %}page={{ n }}">{{ n }}</a>{% endif %}{% endfor %}
+  {% if page.has_next %}<a href="{{ page_qs|default:'?' }}{% if page_qs %}&{% endif %}page={{ page.next_page_number }}" rel="next">次へ →</a>{% else %}<span class="muted">次へ →</span>{% endif %}
 </nav>
+{% endif %}
 {% else %}
 <div class="empty">{% if q %}「{{ q }}」に一致する図面はありません。別の語や、図番の一部で試してください。{% else %}まだ解析済みの図面がありません。Mac mini の解析ワーカーが動くと、ここに図面が並びます。{% endif %}</div>
 {% endif %}
+<script>
+// 詳細から戻ったとき：開いていた図面の位置までスクロールして印を付ける
+(function(){
+  var id = location.hash.slice(1), el = id && document.getElementById(id);
+  if (el) { el.classList.add("last"); el.scrollIntoView({block: "center"}); }
+  document.addEventListener("keydown", function(e){
+    if (e.target.closest("input,select,textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "/") { e.preventDefault(); var q = document.getElementById("q"); q.focus(); q.select(); }
+    var a = e.key === "ArrowLeft" ? document.querySelector('.pager a[rel=prev]') : e.key === "ArrowRight" ? document.querySelector('.pager a[rel=next]') : null;
+    if (a) location.href = a.href;
+  });
+})();
+</script>
 {% endblock %}

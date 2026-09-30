@@ -1,7 +1,24 @@
-{% extends "drawings/base.html" %}{% block title %}{{ d.drawing_no|default:d.file.filename }} - DWG-FIND{% endblock %}{% block content %}
-<p style="margin:0 0 10px"><a href="{% url 'index' %}{% if q %}?q={{ q|urlencode }}{% endif %}">← 検索結果に戻る</a></p>
+{% extends "drawings/base.html" %}{% block title %}{{ d.drawing_no|default:d.file.filename }} - DWG-FIND<script>
+// ← → で前後の図面、Esc で一覧へ
+document.addEventListener("keydown", function(e){
+  if (e.target.closest("input,select,textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+  var id = {ArrowLeft: "prev", ArrowRight: "next", Escape: "back"}[e.key], a = id && document.getElementById(id);
+  if (a) location.href = a.href;
+});
+</script>
+{% endblock %}{% block content %}
+<nav class="dnav">
+  <a id="back" class="btn" href="{{ back }}">← 一覧に戻る</a>
+  {% if nav %}
+  <span class="muted">{% if q %}「{{ q }}」の {% endif %}{{ nav.pos }} / {{ nav.total }} 件目</span>
+  <span class="pn">
+    {% if nav.prev %}<a id="prev" class="btn" href="{% url 'detail' nav.prev.0.pk %}{{ nav.prev.1 }}" title="{{ nav.prev.0.drawing_no }}（← キー）">← 前の図面</a>{% else %}<span class="btn off">← 前の図面</span>{% endif %}
+    {% if nav.next %}<a id="next" class="btn" href="{% url 'detail' nav.next.0.pk %}{{ nav.next.1 }}" title="{{ nav.next.0.drawing_no }}（→ キー）">次の図面 →</a>{% else %}<span class="btn off">次の図面 →</span>{% endif %}
+  </span>
+  {% endif %}
+</nav>
 <div class="detail">
-  <div class="preview">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のプレビュー">{% else %}<div class="empty">プレビューなし</div>{% endif %}</div>
+  <div class="preview">{% if d.thumbnail %}<a href="{% url 'thumbnail' d.pk %}" target="_blank" title="別タブで拡大表示"><img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のプレビュー"></a>{% else %}<div class="empty">プレビューなし</div>{% endif %}</div>
   <div>
     <span class="no" style="color:var(--accent)">{{ d.drawing_no|default:"（図番不明）" }}{% if d.revision %} ・ Rev.{{ d.revision }}{% endif %} ・ {{ d.file.kind|upper }}</span>
     <h1>{{ d.title|default:d.file.filename }}</h1>
@@ -33,7 +50,7 @@
 {% if siblings %}
 <h2>同じファイルの図面 <span class="muted" style="font-weight:400">{{ siblings|length }} 件</span></h2>
 <div class="grid">{% for s in siblings %}
-  <a class="card" href="{% url 'detail' s.pk %}">
+  <a class="card" href="{% url 'detail' s.pk %}{{ keep }}">
     <div class="th">{% if s.thumbnail %}<img src="{% url 'thumbnail' s.pk %}" alt="{{ s.drawing_no }} のサムネイル" loading="lazy">{% endif %}</div>
     <div class="meta"><span class="no">{{ s.drawing_no|default:"（図番不明）" }}</span><span class="ellip" style="font-size:13px">{{ s.page_no }}ページ ・ {{ s.title }}</span></div>
   </a>{% endfor %}
@@ -41,6 +58,14 @@
 {% endif %}
 {% if revisions %}
 <h2>同じ図番の改訂</h2>
-<ul>{% for r in revisions %}<li><a href="{% url 'detail' r.pk %}">{{ r.drawing_no }} Rev.{{ r.revision|default:"-" }}</a> <span class="muted">{{ r.file.path }}</span></li>{% endfor %}</ul>
+<ul>{% for r in revisions %}<li><a href="{% url 'detail' r.pk %}{{ keep }}">{{ r.drawing_no }} Rev.{{ r.revision|default:"-" }}</a> <span class="muted">{{ r.file.path }}</span></li>{% endfor %}</ul>
 {% endif %}
+<script>
+// ← → で前後の図面、Esc で一覧へ
+document.addEventListener("keydown", function(e){
+  if (e.target.closest("input,select,textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+  var id = {ArrowLeft: "prev", ArrowRight: "next", Escape: "back"}[e.key], a = id && document.getElementById(id);
+  if (a) location.href = a.href;
+});
+</script>
 {% endblock %}
