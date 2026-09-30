@@ -411,3 +411,23 @@ class AccessTests(TestCase):
         self.assertEqual(sorted(u.groups.values_list("name", flat=True)), ["User"])
         call_command("set_group", "--list", stdout=out)
         self.assertIn("guest1", out.getvalue())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class LoginLogoutTests(TestCase):
+    def test_logout_goes_to_normal_login(self):
+        User.objects.create_user("u", password="pw-12345678")
+        self.client.login(username="u", password="pw-12345678")
+        r = self.client.post("/accounts/logout/")
+        self.assertRedirects(r, "/accounts/login/", fetch_redirect_response=False)
+
+    def test_admin_logout_and_login_use_normal_login(self):
+        User.objects.create_superuser("root", password="pw-12345678")
+        self.client.login(username="root", password="pw-12345678")
+        r = self.client.post("/admin/logout/")
+        self.assertRedirects(r, "/accounts/login/", fetch_redirect_response=False)
+        r = self.client.get("/admin/", follow=True)
+        self.assertEqual(r.redirect_chain[-1][0], "/accounts/login/?next=%2Fadmin%2F")
+        self.assertTemplateUsed(r, "drawings/login.html")
+        r = self.client.post("/accounts/login/?next=/admin/", {"username": "root", "password": "pw-12345678"})
+        self.assertRedirects(r, "/admin/", fetch_redirect_response=False)
