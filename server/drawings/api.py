@@ -155,7 +155,7 @@ def _num(v):
     except ValueError:
         return None
 
-_CTRL = dict.fromkeys(c for c in range(32) if c not in (9, 10, 13))
+_CTRL = dict.fromkeys([c for c in range(32) if c not in (9, 10, 13)] + list(range(0xD800, 0xE000)))
 
 
 def _clean(v):

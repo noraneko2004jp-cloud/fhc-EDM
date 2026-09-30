@@ -98,6 +98,15 @@ class DrawingSetTests(unittest.TestCase):
         self.assertEqual(len(r["drawings"][0]["pages"]), 6)
 
 
+class CleanTests(unittest.TestCase):
+    def test_surrogates_and_nul_removed(self):
+        import json
+        from dwgworker.process import clean
+        r = clean({"t": "図番\udc90HB\x000001", "l": ["a\udc8d"]})
+        self.assertEqual(r, {"t": "図番HB0001", "l": ["a"]})
+        json.dumps(r, ensure_ascii=False).encode("utf-8")  # 送信できること
+
+
 class IncludeTests(unittest.TestCase):
     def test_include_top_folders_only(self):
         from dwgworker import source
