@@ -8,7 +8,7 @@ document.addEventListener("keydown", function(e){
 </script>
 {% endblock %}{% block content %}
 <nav class="dnav">
-  <a id="back" class="btn" href="{{ back }}">← 一覧に戻る</a>
+  <a id="back" class="btn" href="{{ back }}">← {{ view_label }}に戻る</a>
   {% if nav %}
   <span class="muted">{% if q %}「{{ q }}」の {% endif %}{{ nav.pos }} / {{ nav.total }} 件目</span>
   <span class="pn">
@@ -23,14 +23,15 @@ document.addEventListener("keydown", function(e){
     <span class="no" style="color:var(--accent)">{{ d.drawing_no|default:"（図番不明）" }}{% if d.revision %} ・ Rev.{{ d.revision }}{% endif %} ・ {{ d.file.kind|upper }}</span>
     <h1>{{ d.title|default:d.file.filename }}</h1>
     <dl class="kv">
-      {% if d.attributes.model %}<dt>型式</dt><dd>{{ d.attributes.model }}</dd>{% endif %}
+      {% if model_link %}<dt>型式</dt><dd><a href="{% url 'index' %}{{ model_link }}" title="同じ型式の図面">{{ d.model_code }}</a>{% if d.attributes.model and d.attributes.model != d.model_code %} <span class="muted">（表記：{{ d.attributes.model }}）</span>{% endif %}</dd>{% elif d.attributes.model %}<dt>型式</dt><dd>{{ d.attributes.model }}</dd>{% endif %}
+      {% if series_link %}<dt>図番の系列</dt><dd><a href="{% url 'index' %}{{ series_link }}" title="同じ系列の図面">{{ d.series }}</a></dd>{% endif %}
       {% if d.attributes.job_no %}<dt>案件番号</dt><dd>{{ d.attributes.job_no }}</dd>{% endif %}
       {% if d.attributes.sheet_title %}<dt>図名</dt><dd>{{ d.attributes.sheet_title }}{% if d.attributes.sheet_no %}（{{ d.attributes.sheet_no }}）{% endif %}</dd>{% endif %}
       {% if d.revision %}<dt>改訂・差替</dt><dd>{{ d.revision }}</dd>{% endif %}
       <dt>材質</dt><dd>{{ d.material|default:"—" }}</dd>
       <dt>尺度</dt><dd>{{ d.scale|default:"—" }}</dd>
       <dt>作成日</dt><dd>{{ d.drawn_date|default:"—" }}</dd>
-      <dt>所在</dt><dd>{{ d.file.path }}{% if d.attributes.pages > 1 %}（{{ d.page_no }} / {{ d.attributes.pages }} ページ）{% endif %}</dd>
+      <dt>所在</dt><dd>{% if folder_link %}<a href="{% url 'index' %}{{ folder_link }}" title="このフォルダの図面">{{ d.file.path }}</a>{% else %}{{ d.file.path }}{% endif %}{% if d.attributes.pages > 1 %}（{{ d.page_no }} / {{ d.attributes.pages }} ページ）{% endif %}</dd>
       <dt>更新</dt><dd>{{ d.file.mtime|date:"Y-m-d H:i" }}</dd>
     </dl>
     <p style="font-size:12px;margin:8px 0 0"><span class="pill {% if d.source == 'ocr' or d.source == 'filename' %}w{% else %}ok{% endif %}">{{ d.get_source_display }}</span> 表題欄の読み取り元{% if d.needs_ocr %} ・ <span class="pill w">OCR待ち</span>{% endif %}{% if d.attributes.pages > 1 %} ・ {{ d.attributes.pages }} ページ{% endif %}</p>

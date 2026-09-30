@@ -1,7 +1,5 @@
 import io
 
-from urllib.parse import urlencode
-
 from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, render
@@ -10,7 +8,7 @@ from django.conf import settings
 from pathlib import Path
 
 from .models import AuditLog, Drawing
-from .search import search
+from . import browse
 from .sources import open_source
 
 
@@ -22,12 +20,6 @@ def _int(v, default=None):
         return max(0, int(v))
     except (TypeError, ValueError):
         return default
-
-
-def _qs(**kw):
-    """空の値を省いたクエリ文字列（先頭の ? 付き）。"""
-    kw = {k: v for k, v in kw.items() if v not in ("", None)}
-    return "?" + urlencode(kw) if kw else ""
 
 
 def _page_window(page, around=2):
@@ -43,52 +35,75 @@ def _page_window(page, around=2):
     return out
 
 
+def _state(request):
+    """見せ方は URL で指定がなければ前回使ったもの（セッションに覚える）。"""
+    st = browse.state_from(request.GET, request.session.get("view", "list"))
+    if request.GET.get("v") in browse.VIEWS:
+        request.session["view"] = st["v"]
+    return st
+
+
 def index(request):
-    q = request.GET.get("q", "").strip()
-    kind = request.GET.get("kind", "")
-    terms, qs = search(q, kind)
-    page = Paginator(qs, PER_PAGE).get_page(request.GET.get("page"))
+    st = _state(request)
+    terms, qs = browse.filtered(st)
+    page = Paginator(browse.groups(qs, st["v"]), PER_PAGE).get_page(request.GET.get("page"))
     base = page.start_index() - 1 if page.paginator.count else 0
-    items = [(base + n, d, _qs(q=q, kind=kind, i=base + n)) for n, d in enumerate(page.object_list)]
+    items = [{"i": base + n, "row": r, "d": d, "size": size, "link": browse.qs_string(st, i=base + n)}
+             for n, (r, d, size) in enumerate(browse.drawings_for(page.object_list))]
+    tabs = [(k, label, browse.qs_string({"q": st["q"], "kind": st["kind"], "v": k}) or "?v=list")
+            for k, label in browse.VIEWS.items()]
+    # 階層は、検索語・種類だけで絞った全体から作る（選んだ枝の兄弟も見えるように）
+    nodes = browse.tree(st, browse.filtered({**st, "f": "", "m": "", "s": ""})[1]) if st["v"] != "list" else []
+    for nd in nodes:
+        key = {"folder": "f", "model": "m", "series": "s"}[st["v"]]
+        nd["link"] = browse.qs_string(st, **{key: nd["value"]}) if nd["value"] is not None else ""
+    sel_key = {"folder": "f", "model": "m", "series": "s"}.get(st["v"])
+    crumbs = [(label, browse.qs_string(st, **{sel_key: val})) for label, val in browse.crumbs(st)] if sel_key else []
     return render(request, "drawings/search.html", {
-        "q": q, "kind": kind, "terms": terms, "page": page, "total": page.paginator.count, "items": items,
-        "window": _page_window(page), "page_qs": _qs(q=q, kind=kind),
+        "st": st, "q": st["q"], "kind": st["kind"], "terms": terms, "page": page, "total": page.paginator.count,
+        "drawing_total": qs.count() if st["v"] != "list" or st["q"] else None,
+        "items": items, "window": _page_window(page), "page_qs": browse.qs_string(st),
+        "tabs": tabs, "nodes": nodes, "crumbs": crumbs,
+        "top_link": browse.qs_string(st, **{sel_key: ""}) if sel_key else "", "view_label": browse.VIEWS[st["v"]],
     })
 
 
 def detail(request, pk):
-    """検索一覧から開いたときは q・kind・i（一覧での位置）を受け取り、
-    「一覧に戻る」で同じページ・同じ位置へ戻れるようにし、前後の図面へ移れるようにする。"""
+    """一覧から開いたときは一覧の条件と i（一覧での位置）を受け取り、
+    「一覧に戻る」で同じページ・同じ位置へ戻れるようにし、前後の図面（ファイル）へ移れるようにする。"""
     d = get_object_or_404(Drawing.objects.select_related("file"), pk=pk)
     AuditLog.objects.create(user=request.user, action=AuditLog.Action.VIEW, target=d.file.path)
-    q = request.GET.get("q", "").strip()
-    kind = request.GET.get("kind", "")
+    st = browse.state_from(request.GET, request.session.get("view", "list"))
     i = _int(request.GET.get("i"))
     back_page = _int(request.GET.get("p"), 1) or 1
     nav = {}
     if i is not None:
-        _, qs = search(q, kind)
-        window = list(qs[max(i - 1, 0):i + 2])
-        cur = i - max(i - 1, 0)
-        if cur < len(window) and window[cur].pk == d.pk:  # 一覧が変わっていなければ前後を出す
-            back_page = i // PER_PAGE + 1
-            nav["total"] = qs.count()
+        back_page = i // PER_PAGE + 1
+        _, qs = browse.filtered(st)
+        ordered = browse.groups(qs, st["v"])
+        lo = max(i - 1, 0)
+        rows = browse.drawings_for(ordered[lo:i + 2])
+        cur = i - lo
+        if cur < len(rows) and rows[cur][1].file_id == d.file_id:  # 一覧が変わっていなければ前後を出す
+            nav["total"] = ordered.count()
             nav["pos"] = i + 1
             if cur > 0:
-                nav["prev"] = (window[cur - 1], _qs(q=q, kind=kind, i=i - 1))
-            if cur + 1 < len(window):
-                nav["next"] = (window[cur + 1], _qs(q=q, kind=kind, i=i + 1))
-        else:
-            back_page = i // PER_PAGE + 1
-    back = reverse("index") + _qs(q=q, kind=kind, page=back_page if back_page > 1 else None)
+                nav["prev"] = (rows[cur - 1][1], browse.qs_string(st, i=i - 1))
+            if cur + 1 < len(rows):
+                nav["next"] = (rows[cur + 1][1], browse.qs_string(st, i=i + 1))
+    back = reverse("index") + (browse.qs_string(st, page=back_page if back_page > 1 else "") or "?v=" + st["v"])
     if i is not None:
-        back += f"#d{d.pk}"
-    keep = _qs(q=q, kind=kind, p=back_page if back_page > 1 else None)  # 同じファイルの図面などへ移っても戻り先を保つ
+        back += f"#f{d.file_id}"
+    keep = browse.qs_string(st, p=back_page if back_page > 1 else "")  # 同じファイルの図面などへ移っても戻り先を保つ
     revisions = Drawing.objects.filter(drawing_no=d.drawing_no).exclude(pk=d.pk).select_related("file") if d.drawing_no else []
     siblings = d.file.drawings.exclude(pk=d.pk).order_by("page_no")  # 同じ図面一式の他のページ
+    folder = d.file.path.rsplit("/", 1)[0] if "/" in d.file.path else ""
     return render(request, "drawings/detail.html", {
-        "d": d, "bom": d.bom_items.all(), "revisions": revisions, "siblings": siblings, "q": q,
-        "back": back, "keep": keep, "nav": nav,
+        "d": d, "bom": d.bom_items.all(), "revisions": revisions, "siblings": siblings, "q": st["q"],
+        "back": back, "keep": keep, "nav": nav, "view_label": browse.VIEWS[st["v"]],
+        "folder_link": browse.qs_string({"v": "folder", "f": folder}) if folder else "",
+        "model_link": browse.qs_string({"v": "model", "m": f"{d.model_family}/{d.model_code}"}) if d.model_code not in ("", "_") else "",
+        "series_link": browse.qs_string({"v": "series", "s": f"{d.series_prefix}/{d.series}"}) if d.series not in ("", "_") else "",
     })
 
 

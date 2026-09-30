@@ -4,24 +4,43 @@
   <select id="kind" name="kind" aria-label="種類" onchange="this.form.submit()"><option value="">すべて</option>
     <option value="dxf" {% if kind == "dxf" %}selected{% endif %}>DXF</option>
     <option value="pdf" {% if kind == "pdf" %}selected{% endif %}>PDF</option></select>
+  <input type="hidden" name="v" value="{{ st.v }}">
+  {% if st.f %}<input type="hidden" name="f" value="{{ st.f }}">{% endif %}
+  {% if st.m %}<input type="hidden" name="m" value="{{ st.m }}">{% endif %}
+  {% if st.s %}<input type="hidden" name="s" value="{{ st.s }}">{% endif %}
   <button type="submit">検索</button>
 </form>
+<nav class="tabs" aria-label="見せ方">{% for k, label, link in tabs %}<a href="{% url 'index' %}{{ link }}" {% if k == st.v %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
 <div class="expand">
   {% if terms|length > 1 %}辞書で展開：{% for t in terms %}<span class="chip {% if not forloop.first %}syn{% endif %}">{{ t }}</span>{% endfor %}{% endif %}
-  <span style="margin-left:auto">{{ total }} 件{% if page.paginator.num_pages > 1 %}（{{ page.start_index }}〜{{ page.end_index }} 件目）{% endif %}</span>
+  <span style="margin-left:auto">{{ total }} 件{% if drawing_total and drawing_total != total %}（図面 {{ drawing_total }} 枚）{% endif %}{% if page.paginator.num_pages > 1 %} ・ {{ page.start_index }}〜{{ page.end_index }} 件目{% endif %}</span>
 </div>
-{% if page.object_list %}
+<div class="{% if st.v != 'list' %}browse{% endif %}">
+{% if st.v != "list" %}
+<aside class="side" aria-label="{{ view_label }}の階層">
+  <a class="node top {% if not crumbs %}cur{% endif %}" href="{% url 'index' %}{{ top_link }}">すべて</a>
+  <div class="nodes">
+  {% for nd in nodes %}{% if not nd.link %}<p class="muted node d{{ nd.depth }}" style="font-size:12px;margin:0">{{ nd.label }}</p>{% else %}<a class="node d{{ nd.depth }}{% if nd.current %} cur{% elif nd.open %} open{% endif %}" href="{% url 'index' %}{{ nd.link }}" title="{{ nd.label }}"><span class="ellip">{% if st.v == "folder" %}{% if nd.open or nd.current %}▾{% else %}▸{% endif %} {% endif %}{{ nd.label }}</span><span class="n">{{ nd.n }}</span></a>{% endif %}
+  {% empty %}<p class="muted" style="font-size:12.5px;margin:6px 8px">該当なし</p>{% endfor %}
+  </div>
+</aside>
+{% endif %}
+<section>
+{% if crumbs %}<nav class="crumbs"><a href="{% url 'index' %}{{ top_link }}">{{ view_label }}</a>{% for label, link in crumbs %} / {% if forloop.last %}<b>{{ label }}</b>{% else %}<a href="{% url 'index' %}{{ link }}">{{ label }}</a>{% endif %}{% endfor %}</nav>{% endif %}
+{% if items %}
 <div class="grid">
-{% for n, d, link in items %}
-  <a class="card" id="d{{ d.pk }}" href="{% url 'detail' d.pk %}{{ link }}">
-    <div class="th">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のサムネイル" loading="lazy">{% else %}<span class="muted">プレビューなし</span>{% endif %}</div>
+{% for it in items %}{% with d=it.d %}
+  {% ifchanged it.row.model %}{% if st.v == "model" %}<h3 class="gh">{% if it.row.model == "_" %}（型式なし）{% else %}{{ it.row.model }}{% endif %}</h3>{% endif %}{% endifchanged %}
+  <a class="card" id="f{{ d.file_id }}" href="{% url 'detail' d.pk %}{{ it.link }}">
+    <div class="th">{% if d.thumbnail %}<img src="{% url 'thumbnail' d.pk %}" alt="{{ d.drawing_no }} のサムネイル" loading="lazy">{% else %}<span class="muted">プレビューなし</span>{% endif %}
+      {% if it.size > 1 %}<span class="set" title="この PDF に {{ it.size }} 枚の図面">一式 {{ it.size }}枚{% if it.row.hits > 1 and it.row.hits < it.size %}・{{ it.row.hits }}枚一致{% endif %}</span>{% endif %}</div>
     <div class="meta">
-      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}{% if d.attributes.pages > 1 %} p{{ d.page_no }}/{{ d.attributes.pages }}{% endif %}</span></span>
-      <span class="ellip" style="font-size:13px">{% if d.attributes.model %}<span class="muted">{{ d.attributes.model }}</span> {% endif %}{{ d.title|default:d.file.filename }}</span>
+      <span><span class="ft {{ d.file.kind }}">{{ d.file.kind|upper }}</span><span class="no">{{ d.drawing_no|default:"（図番不明）" }}</span> <span class="muted">{% if d.revision %}Rev.{{ d.revision }}{% endif %}{% if it.size > 1 %} p{{ d.page_no }}{% endif %}</span></span>
+      <span class="ellip" style="font-size:13px">{% if d.attributes.model %}<span class="muted">{{ d.attributes.model }}</span> {% endif %}{% if it.size > 1 and d.attributes.file_title %}{{ d.attributes.file_title }}{% else %}{{ d.title|default:d.file.filename }}{% endif %}</span>
       <span class="ellip muted" style="font-size:11.5px" title="{{ d.file.path }}">{{ d.file.path }}</span>
     </div>
   </a>
-{% endfor %}
+{% endwith %}{% endfor %}
 </div>
 {% if page.paginator.num_pages > 1 %}
 <nav class="pager" aria-label="ページ">
@@ -31,13 +50,17 @@
 </nav>
 {% endif %}
 {% else %}
-<div class="empty">{% if q %}「{{ q }}」に一致する図面はありません。別の語や、図番の一部で試してください。{% else %}まだ解析済みの図面がありません。Mac mini の解析ワーカーが動くと、ここに図面が並びます。{% endif %}</div>
+<div class="empty">{% if q %}「{{ q }}」に一致する図面はありません{% if crumbs %}（{{ view_label }}の絞り込み中です。「すべて」に戻すと増えるかもしれません）{% endif %}。別の語や、図番の一部で試してください。{% else %}まだ解析済みの図面がありません。Mac mini の解析ワーカーが動くと、ここに図面が並びます。{% endif %}</div>
 {% endif %}
+</section>
+</div>
 <script>
 // 詳細から戻ったとき：開いていた図面の位置までスクロールして印を付ける
 (function(){
   var id = location.hash.slice(1), el = id && document.getElementById(id);
   if (el) { el.classList.add("last"); el.scrollIntoView({block: "center"}); }
+  var cur = document.querySelector(".side .node.cur");
+  if (cur) cur.scrollIntoView({block: "nearest"});
   document.addEventListener("keydown", function(e){
     if (e.target.closest("input,select,textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "/") { e.preventDefault(); var q = document.getElementById("q"); q.focus(); q.select(); }

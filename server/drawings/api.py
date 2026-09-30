@@ -24,6 +24,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import BomItem, Drawing, Job, Page, SourceFile
+from . import classify
 from .text import build_search_text
 
 log = logging.getLogger("drawings")
@@ -213,6 +214,7 @@ def _save_drawing(request, f, page_no, d, pages, bom):
         *[" ".join([b.part_no, b.name, b.material, b.ref_drawing_no]) for b in drawing.bom_items.all()],
         *[(p.get("text") or "")[:6000] for p in pages],
     )
+    classify.apply(drawing)
     drawing.save()
     return drawing
 

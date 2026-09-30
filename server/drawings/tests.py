@@ -168,25 +168,115 @@ class SearchViewTests(TestCase):
             Drawing.objects.create(file=f, drawing_no=f"ZZ{n:04d}", search_text=build_search_text(f"ZZ{n:04d}"))
         self.client.login(username="u", password="pw-12345678")
         r = self.client.get("/", {"q": "ZZ", "kind": "pdf", "page": 2})
-        n, d, link = r.context["items"][0]
-        self.assertEqual((n, d.drawing_no), (50, "ZZ0050"))
-        self.assertIn("i=50", link)
-        r = self.client.get(f"/d/{d.pk}/{link}")
+        it = r.context["items"][0]
+        d = it["d"]
+        self.assertEqual((it["i"], d.drawing_no), (50, "ZZ0050"))
+        self.assertIn("i=50", it["link"])
+        r = self.client.get(f"/d/{d.pk}/{it['link']}")
         self.assertIn("page=2", r.context["back"])
         self.assertIn("kind=pdf", r.context["back"])
-        self.assertTrue(r.context["back"].endswith(f"#d{d.pk}"))
+        self.assertTrue(r.context["back"].endswith(f"#f{d.file_id}"))
         nav = r.context["nav"]
         self.assertEqual((nav["pos"], nav["total"]), (51, 120))
         self.assertEqual((nav["prev"][0].drawing_no, nav["next"][0].drawing_no), ("ZZ0049", "ZZ0051"))
         self.assertIn("i=49", nav["prev"][1])
-        # 最初の図面には「前」がない
         first = Drawing.objects.get(drawing_no="ZZ0000")
         r = self.client.get(f"/d/{first.pk}/", {"q": "ZZ", "i": 0})
         self.assertNotIn("prev", r.context["nav"])
-        # 一覧から来ていない（i なし）ときは前後なし・戻り先は一覧
         r = self.client.get(f"/d/{first.pk}/", {"q": "ZZ", "p": 3})
         self.assertEqual(r.context["nav"], {})
         self.assertIn("page=3", r.context["back"])
-        # ページ番号の並び
         r = self.client.get("/", {"q": "ZZ"})
         self.assertEqual(r.context["window"], [1, 2, 3])
+
+
+class ClassifyTests(TestCase):
+    def test_series(self):
+        from .classify import series_of
+        self.assertEqual(series_of("HB0011XXXX"), ("HB", "HB0011"))
+        self.assertEqual(series_of("HDBY003920"), ("HDBY", "HDBY0039"))
+        self.assertEqual(series_of("HDBY003930"), ("HDBY", "HDBY0039"))
+        self.assertEqual(series_of("UH-3600-01"), ("UH", "UH-3600"))
+        self.assertEqual(series_of("UH-3600"), ("UH", "UH-3600"))
+        self.assertEqual(series_of("1234567890"), ("数字", "123456"))
+        self.assertEqual(series_of(""), ("_", "_"))
+
+    def test_model(self):
+        from .classify import model_of
+        self.assertEqual(model_of("図面/x/20-032 CAK-A 多用途ﾊｳｽ 図面一式.pdf", {"model": "CAK-A"}), ("CAK", "CAK-A"))
+        self.assertEqual(model_of("図面/dxfCAK-40A 田の字36R-221003.dxf"), ("CAK", "CAK-40A"))
+        self.assertEqual(model_of("図面 DXF・DWG・JW・PDF/JH/JH 標準/HB0011XXXX 差替3.pdf"), ("JH", "JH"))
+        self.assertEqual(model_of("図面/CAG-12/部品/UH-3600-01.dxf"), ("CAG", "CAG-12"))
+        self.assertEqual(model_of("図面/部品/UH-3600-01.dxf"), ("_", "_"))  # 図番は型式にしない
+        self.assertEqual(model_of("PDF/DXF-1/a.pdf"), ("_", "_"))
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class BrowseViewTests(TestCase):
+    def setUp(self):
+        from datetime import datetime, timezone
+        from . import classify
+        from .text import build_search_text
+        User.objects.create_user("u", password="pw-12345678")
+        self.client.login(username="u", password="pw-12345678")
+        now = datetime.now(timezone.utc)
+        rows = [("図面/CAK/CAK-A/20-032 CAK-A 図面一式.pdf", [(1, "HDBY003920"), (2, "HDBY003930"), (3, "HDBY004010")]),
+                ("図面/CAK/dxfCAK-40A 田の字36R-221003.dxf", [(1, "")]),
+                ("図面/JH/HB0011XXXX差替3 スペーサー.pdf", [(1, "HB0011XXXX")]),
+                ("資料/申請書.pdf", [(1, "")])]
+        for path, pages in rows:
+            f = SourceFile.objects.create(path=path, kind=path[-3:], size=1, mtime=now)
+            for page_no, no in pages:
+                d = Drawing(file=f, page_no=page_no, drawing_no=no, attributes={"pages": len(pages)},
+                            search_text=build_search_text(no, path))
+                classify.apply(d)
+                d.save()
+
+    def test_list_collapses_drawing_sets(self):
+        r = self.client.get("/", {"v": "list"})
+        self.assertEqual(r.context["total"], 4)  # 図面一式の 3 枚は 1 件
+        set_item = next(it for it in r.context["items"] if it["size"] == 3)
+        self.assertEqual(set_item["d"].page_no, 1)
+        self.assertContains(r, "一式 3枚")
+        self.assertEqual(r.context["items"][-1]["d"].drawing_no, "")  # 図番のないものは後ろ
+        # 検索で 2 ページ目だけ一致したら、代表は 2 ページ目
+        r = self.client.get("/", {"q": "HDBY003930"})
+        self.assertEqual([it["d"].page_no for it in r.context["items"]], [2])
+
+    def test_folder_tree(self):
+        r = self.client.get("/", {"v": "folder"})
+        self.assertEqual([(n["label"], n["n"]) for n in r.context["nodes"]], [("図面", 5), ("資料", 1)])
+        r = self.client.get("/", {"v": "folder", "f": "図面/CAK"})
+        labels = [(n["label"], n["depth"], n["current"]) for n in r.context["nodes"]]
+        self.assertIn(("CAK", 1, True), labels)
+        self.assertIn(("CAK-A", 2, False), labels)
+        self.assertIn(("JH", 1, False), labels)
+        self.assertIn(("資料", 0, False), labels)
+        self.assertEqual(r.context["total"], 2)  # CAK 以下のファイル
+        self.assertEqual([c[0] for c in r.context["crumbs"]], ["図面", "CAK"])
+        # 見せ方を覚える
+        r = self.client.get("/")
+        self.assertEqual(r.context["st"]["v"], "folder")
+
+    def test_model_and_series(self):
+        r = self.client.get("/", {"v": "model"})
+        self.assertEqual({n["label"]: n["n"] for n in r.context["nodes"]}, {"CAK": 4, "JH": 1, "（型式なし）": 1})
+        r = self.client.get("/", {"v": "model", "m": "CAK"})
+        self.assertIn("CAK-40A", [n["label"] for n in r.context["nodes"]])
+        r = self.client.get("/", {"v": "model", "m": "CAK/CAK-40A"})
+        self.assertEqual(r.context["total"], 1)
+        labels = [n["label"] for n in r.context["nodes"]]
+        self.assertIn("CAK-A", labels)  # 選んだ型式の兄弟も見える
+        self.assertIn("JH", labels)
+        r = self.client.get("/", {"v": "series", "s": "HDBY/HDBY0039"})
+        self.assertEqual(r.context["total"], 1)
+        self.assertEqual(r.context["drawing_total"], 2)
+
+    def test_detail_nav_in_folder_view(self):
+        r = self.client.get("/", {"v": "folder", "f": "図面"})
+        it = r.context["items"][0]
+        r = self.client.get(f"/d/{it['d'].pk}/{it['link']}")
+        self.assertIn("v=folder", r.context["back"])
+        self.assertIn("f=", r.context["back"])
+        self.assertEqual(r.context["nav"]["total"], 3)
+        self.assertTrue(r.context["folder_link"])

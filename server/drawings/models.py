@@ -63,6 +63,11 @@ class Drawing(models.Model):
     thumbnail = models.CharField(max_length=255, blank=True, help_text="MEDIA_ROOT からの相対パス")
     # 検索用：図番・品名・材質・部品表・パスを正規化して連結したもの（pg_trgm で部分一致検索）
     search_text = models.TextField(blank=True)
+    # グループ化用（classify.py で決める。"_" は不明）
+    model_family = models.CharField("型式系統", max_length=16, blank=True, db_index=True)
+    model_code = models.CharField("型式", max_length=64, blank=True, db_index=True)
+    series_prefix = models.CharField("図番の頭", max_length=16, blank=True, db_index=True)
+    series = models.CharField("図番の系列", max_length=64, blank=True, db_index=True)
     parsed_at = models.DateTimeField(auto_now=True)
 
     class Meta:
