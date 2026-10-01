@@ -594,6 +594,48 @@ def _mode(values, tol):
     return max(vs, key=lambda v: (sum(1 for x in vs if abs(x - v) <= tol), -v)) if vs else None
 
 
+# スキャン図面（手書き時代〜CAD 出力の共通様式）の部品表の列の位置。品番の欄の左端を 0、品番の欄の幅を 118 としたもの。
+# 2026-10-02 実スキャン 15 件で確認（用紙 A4 縦・A3 横・A2 を A3 に縮小したもの、どれも同じ寸法）。
+# 見出しの文字や細い罫線が読めなくても、品番と名称の欄の幅からこの様式と分かれば、列はこの寸法で決める
+SCAN_TEMPLATE = [(-24, -12, None), (-12, 0, "item_no"), (0, 118, "part_no"), (118, 296, "name"),
+                 (296, 314, "qty"), (314, 326, "qty2"), (326, 338, "qty3"), (338, 350, "qty4"), (350, 362, "qty5"),
+                 (362, 380, "material"), (380, 409, "thickness"), (409, 444, "width"), (444, 471, "length"),
+                 (471, 503, "weight")]
+
+
+def _template_spans(bounds):
+    """罫線の位置（x の並び）がスキャン図面の様式に合えば、[(x0, x1, 列名)] を返す。合わなければ None。
+    品番の欄の幅（118）に合う 2 本の線を手がかりに、様式の線の位置と見つかった線を突き合わせ、合った線から
+    位置と倍率を決め直す。細い線がかすれて見つからなくても（員数の枝番の線など）、様式の寸法で列を決められる。"""
+    edges = sorted({e for a, b, _ in SCAN_TEMPLATE for e in (a, b)})
+    best = None
+    for a in bounds:
+        for b in bounds:
+            k = (b - a) / 118.0
+            if not 0.96 <= k <= 1.04:
+                continue
+            a2, k2 = a, k
+            pairs = []
+            for tol in (5.0, 3.5):
+                pairs = [(e, min(bounds, key=lambda x: abs(a2 + e * k2 - x))) for e in edges]
+                pairs = [(e, x) for e, x in pairs if abs(a2 + e * k2 - x) <= tol]
+                if len(pairs) < 3:
+                    break
+                n = len(pairs)
+                me, mx = sum(e for e, _ in pairs) / n, sum(x for _, x in pairs) / n
+                var = sum((e - me) ** 2 for e, _ in pairs)
+                k2 = sum((e - me) * (x - mx) for e, x in pairs) / var if var else k2
+                a2 = mx - k2 * me
+            got = {e for e, _ in pairs}
+            if len(got) >= 7 and {0, 118} <= got and (-12 in got or -24 in got) and 0.96 <= k2 <= 1.04:
+                if best is None or len(got) > best[0]:
+                    best = (len(got), a2, k2, dict(pairs))
+    if best is None:
+        return None
+    _, a, k, found = best
+    return [(found.get(x0, a + x0 * k), found.get(x1, a + x1 * k), lab) for x0, x1, lab in SCAN_TEMPLATE]
+
+
 def _qty_region(info, spans, rows, h):
     """員数の欄（qty・qty2…）の位置と、行の高さを info に残す（OCR が落とした 1 桁の員数を読み直すため）。"""
     if info is None or not rows:
@@ -665,12 +707,23 @@ def _grid_tables(items, vlines, info=None):
         for x in sorted(v[0] for v in cols_lines):
             if not bounds or x - bounds[-1] > h * 0.6:
                 bounds.append(x)
-        if len(bounds) < 5:
+        # 様式との突き合わせには、表の線をすべて使う（見出しの段で途切れた線も、様式の位置にあれば列の区切り）
+        span = top - bottom
+        partial = [v for v in longs if x_min <= v[0] <= x_max and v not in g and v not in through
+                   and min(v[2], top) - max(v[1], bottom) >= span * 0.7 and v[2] <= top + span]  # 上端が少し欠けた線
+        all_x = []
+        for x in sorted(v[0] for v in g + through + partial):
+            if not all_x or x - all_x[-1] > h * 0.3:
+                all_x.append(x)
+        if len(bounds) < 5 and len(all_x) < 5:
             continue
         edge = [v[0] for v in vlines if bounds[-1] + h * 1.5 < v[0] < bounds[-1] + h * 20
                 and v[1] <= head_top and v[2] >= top - h]
         if edge:
             bounds.append(min(edge))
+        tpl = _template_spans(sorted(set(all_x) | set(bounds)))
+        if not tpl and len(bounds) < 5:
+            continue
         spans = [[a, b, None, 0.0] for a, b in zip(bounds, bounds[1:])]
         head = [i for i in items if bottom - h * 0.5 <= i["y"] <= head_top + h * 0.3 and bounds[0] <= i["x"] <= bounds[-1]]
         for sp in spans:
@@ -684,10 +737,14 @@ def _grid_tables(items, vlines, info=None):
                 sp[2] = None
         _fill_by_template(spans)
         labels = [sp[2] for sp in spans]
-        if "part_no" not in labels:
+        if tpl:
+            final = tpl
+        elif "part_no" not in labels:
             continue
-        final = _split_length(spans)
-        x_lo, x_hi = bounds[0] - h * 0.5, bounds[-1] + h * 0.5
+        else:
+            final = _split_length(spans)
+        x_lo = min(bounds[0], final[0][0]) - h * 0.5
+        x_hi = max(bounds[-1], final[-1][1]) + h * 0.5
         sub = [i for i in items if x_lo <= i["x"] <= x_hi and head_top + h * 0.3 < i["y"] < top]
         found = []
         lines = []

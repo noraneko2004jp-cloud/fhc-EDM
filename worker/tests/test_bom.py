@@ -368,6 +368,20 @@ class BomScanTests(unittest.TestCase):
         self.assertEqual(len(q["rows"]), 5)
         self.assertLess(q["h"], 9.0)
 
+    def test_template_spans(self):
+        """様式の寸法に合う線の並びなら、かすれて見つからない線（員数の枝番・材質など）があっても列が決まる。"""
+        P = 646.0
+        found = [P - 24, P - 9, P, P + 120, P + 331, P + 412, P + 447]     # 実スキャン（HCP3620024-1）で見つかった線
+        spans = bom._template_spans(sorted(found))
+        self.assertIsNotNone(spans)
+        lab = {l: (a, b) for a, b, l in spans}
+        self.assertAlmostEqual(lab["part_no"][0], P, delta=1)
+        self.assertAlmostEqual(lab["name"][0], P + 120, delta=1)
+        self.assertAlmostEqual(lab["qty"][0], P + 298, delta=5)             # 線は見つかっていないが様式の位置
+        self.assertAlmostEqual(lab["material"][0], P + 365, delta=5)
+        # 品番・名称の欄の幅が違う表（別の様式）は合わせない
+        self.assertIsNone(bom._template_spans([619, 630, 645, 732, 866, 885, 898, 910, 921, 933, 956, 987, 1023, 1044, 1069]))
+
     def test_ocr_code_fixes(self):
         self.assertEqual(bom.ocr_code("HC.Z.1.D.9.0.0.6.1"), "HCZID90061")
         self.assertEqual(bom.ocr_code("0031008.0.0.1"), "0031008001")
