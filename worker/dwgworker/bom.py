@@ -239,6 +239,7 @@ def _assign_by_lines(cells, spans, h, ocr=False):
     out = {}
     item_left = next((a for a, b, lab in spans if lab == "item_no"), None)
     part_left = next((a for a, b, lab in spans if lab == "part_no"), None)
+    name_left = next((a for a, b, lab in spans if lab == "name"), None)
     for c in cells:
         text = c["text"]
         w = c["x1"] - c["x0"]
@@ -254,6 +255,16 @@ def _assign_by_lines(cells, spans, h, ocr=False):
                 out["part_no"] = (out.get("part_no", "") + " " + text[k:]).strip()
             else:
                 out["part_no"] = (out.get("part_no", "") + " " + text).strip()
+            continue
+        if ocr and name_left is not None and part_left is not None and len(text) > 6 \
+                and part_left - h <= c["x0"] < name_left - h * 3 and c["x1"] > name_left + h * 3:
+            # 長い品番が名称の欄まではみ出し、OCR が品番と名称を 1 つにした（「6064-B1-2HD79618-UK#カマチドア/…」）：
+            # 名称はカナ・漢字で始まるので、最初のカナ・漢字で分ける。なければ文字の位置で分ける
+            k = next((n for n, ch in enumerate(text) if ord(ch) >= 0x2E80), None)
+            if k is None or k < 3:
+                k = max(3, min(len(text) - 1, round((name_left - c["x0"]) / cw)))
+            out["part_no"] = (out.get("part_no", "") + " " + text[:k]).strip()
+            out["name"] = (out.get("name", "") + " " + text[k:]).strip()
             continue
         # OCR の長い文字は中心の位置で欄を決める（行番号の欄から少しはみ出して始まる品番など）
         x = c["x0"] + w / 2 if ocr and len(text) > 3 else c["x0"] + h * 0.3
@@ -590,8 +601,23 @@ def _qty_region(info, spans, rows, h):
     qs = [(a, b) for a, b, lab in spans if lab == "qty" or (lab and _QTYN.match(lab))]
     if not qs:
         return
-    info.setdefault("qty", []).append({"x0": min(a for a, _ in qs), "x1": max(b for _, b in qs), "h": h,
-                                       "rows": sorted(r["_y"] for r in rows if "_y" in r)})
+    ys = sorted(r["_y"] for r in rows if "_y" in r)
+    # 行は等間隔。OCR の文字の囲みは行ごとに数 pt ずれるので、等間隔の格子に当てはめた高さを使う。
+    # 文字の高さも行の間隔から見積もる（OCR が文字を大きめに囲むと h が大きくなり、隣の行まで切り出してしまう）
+    gaps = [b - a for a, b in zip(ys, ys[1:]) if b - a > h * 0.5]
+    if len(gaps) >= 2:
+        pitch = statistics.median(gaps)
+        ks = [round((y - ys[0]) / pitch) for y in ys]
+        if len(set(ks)) == len(ks):
+            n = len(ys)
+            mk, my = sum(ks) / n, sum(ys) / n
+            var = sum((k - mk) ** 2 for k in ks)
+            slope = sum((k - mk) * (y - my) for k, y in zip(ks, ys)) / var if var else pitch
+            if pitch * 0.9 <= slope <= pitch * 1.1:
+                ys = [my + slope * (k - mk) for k in ks]
+                pitch = slope
+        h = min(h, pitch / 1.8)
+    info.setdefault("qty", []).append({"x0": min(a for a, _ in qs), "x1": max(b for _, b in qs), "h": h, "rows": ys})
 
 
 def _grid_tables(items, vlines, info=None):
@@ -616,14 +642,25 @@ def _grid_tables(items, vlines, info=None):
     tables = []
     for g in groups:
         xs = sorted(v[0] for v in g)
-        if len(g) < 6 or xs[-1] - xs[0] < h * 40:
+        if len(g) < 6 or xs[-1] - xs[0] < h * 30:  # 文字が大きめに読まれた図面（h が大きい）でも表を落とさない
             continue
-        bottom = _mode([v[1] for v in g], h * 0.6)              # 表の下端（見出しの下の線）
+        # 表の下端（見出しの下の線）：下端のそろった線が 3 本以上ある、いちばん低い高さ。
+        # （枠の線 1 本だけが下に伸びていても引きずられない。見出しの上の段から始まる線の方が多くても下の段を選ぶ）
+        lows = sorted(v[1] for v in g)
+        bottom = next((y for y in lows if sum(1 for z in lows if abs(z - y) <= h * 0.6) >= 3), None)
+        if bottom is None:
+            bottom = _mode(lows, h * 0.6)
+        bottom = statistics.median(z for z in lows if abs(z - bottom) <= h * 0.6)
         top = statistics.median(v[2] for v in g)
         inner = [v for v in g if v[1] > bottom + h * 0.6]       # 見出しの上の段から始まる線
         near = [v[1] for v in inner if v[1] <= bottom + h * 3]
         head_top = _mode(near, h * 0.4) if near else bottom + h * 1.5
-        cols_lines = [v for v in g if v[1] <= head_top + h * 0.6]  # 見出しの上の段から下へ伸びる線は、どれも列の区切り
+        # 見出しの上の段から下へ伸びる線は、どれも列の区切り。表の上端より上まで伸びた線（図の線とつながって
+        # 見えたもの）は上端の高さが違うので g に入っていないが、表を上から下まで通っていれば区切りに数える
+        x_min, x_max = min(v[0] for v in g), max(v[0] for v in g)
+        through = [v for v in longs if x_min < v[0] < x_max and v[1] <= head_top + h * 0.6 and v[2] > top + h * 1.2
+                   and v[2] - top < (top - bottom)]
+        cols_lines = [v for v in g if v[1] <= head_top + h * 0.6] + through
         bounds = []
         for x in sorted(v[0] for v in cols_lines):
             if not bounds or x - bounds[-1] > h * 0.6:
@@ -653,8 +690,15 @@ def _grid_tables(items, vlines, info=None):
         x_lo, x_hi = bounds[0] - h * 0.5, bounds[-1] + h * 0.5
         sub = [i for i in items if x_lo <= i["x"] <= x_hi and head_top + h * 0.3 < i["y"] < top]
         found = []
-        for ln in reversed(_lines(sub, 0.8)):  # 見出しに近い方（下）から
-            row = _fix_lead_num(_assign_by_lines(_cells(ln["items"], merge=False), final, h, ocr=True))
+        lines = []
+        for ln in _lines(sub, 0.8):
+            # 行と行の間の文字（訂正の取り消し線つきの数字など）で 2 行がつながったものは、細かく分け直す
+            lines.extend(_lines(ln["items"], 0.4) if ln["y"] - ln["ylast"] > h * 0.9 else [ln])
+        for ln in reversed(lines):  # 見出しに近い方（下）から
+            cells = _cells(ln["items"], merge=False)
+            if _headerish(_cells(ln["items"])):  # 見出しが 3 段の様式で、上の段が行として残ったもの
+                continue
+            row = _fix_lead_num(_assign_by_lines(cells, final, h, ocr=True))
             kind = _kind(row)
             if kind not in ("empty", "header", "other"):
                 found.append({**row, "_y": ln["y"], "_kind": kind})
@@ -767,9 +811,22 @@ def extract(items, vlines=None, info=None) -> list[dict]:
         if any(a in k for a in _ANCHORS) and not any(m in k for m in TITLEBLOCK_MARKERS):
             if not any(abs(a["x"] - it["x"]) < _h(it) * 2 and abs(a["y"] - it["y"]) < _h(it) * 2 for a in anchors):
                 anchors.append(it)
-    tables = [t for a in anchors if (t := _table(items, a, anchors, vlines or [], info))]
-    if not tables and vlines:
-        tables = _grid_tables(items, vlines, info)  # 見出しが読めないスキャン図面
+    tables = []
+    if is_ocr and vlines:
+        # スキャン図面は罫線の格子から読む（見出しの文字が読めていても、員数の枝番の欄などは格子の方が確か）。
+        # 格子で読めた行が見出しからの読み取りより少なければ、見出しからの方を使う
+        ginfo = {}
+        tables = _grid_tables(items, vlines, ginfo)
+        ainfo = {}
+        by_anchor = [t for a in anchors if (t := _table(items, a, anchors, vlines, ainfo))]
+        if sum(len(t) for t in by_anchor) > sum(len(t) for t in tables):
+            tables, ginfo = by_anchor, ainfo
+        if info is not None:
+            info.update(ginfo)
+    else:
+        tables = [t for a in anchors if (t := _table(items, a, anchors, vlines or [], info))]
+        if not tables and vlines:
+            tables = _grid_tables(items, vlines, info)  # 見出しが読めない図面
     if not tables:
         return []
     out, seen = [], set()

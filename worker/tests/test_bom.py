@@ -341,6 +341,33 @@ class BomScanTests(unittest.TestCase):
         self.assertEqual(rows[0]["length"], "")  # 右端の質量は長さに入れない
         self.assertFalse(any("注記" in r["raw_text"] for r in rows))
 
+    def test_scan_variants_from_real_samples(self):
+        """2026-10-02 の実スキャン 8 件で見つかった崩れ：
+        ・員数の枝番の線が表の上まで伸びている（図の線とつながって見える）→ 列の区切りに数える
+        ・見出しの上の段から始まる線の方が多い → 表の下端は下の段
+        ・長い品番が名称の欄にはみ出し、OCR が品番と名称を 1 つにする → カナで分ける
+        ・見出しが読めていても、員数の欄の位置（読み直し用）が取れる"""
+        items, vlines = scan_drawing()
+        H = 8.6
+        vlines = [(x, a, 330.0) if abs(x - 394.4) < 0.1 else (x, a, b) for x, a, b in vlines]   # 枝番の線が上に伸びる
+        vlines += [(x, 119.97, 289.1) for x in (460.0, 495.0, 530.0, 545.0)]                    # 上の段から始まる線を増やす
+        items = [i for i in items if i["text"] != "図番双は&番"]
+        long = "6064-B1-2HD79618-UK#テストドア/ブラウン"
+        items += [{"text": "図番又は品番", "x": 95, "y": 114.9, "h": H,
+                   "tokens": [{"text": "図番又は品番", "x": 95, "y": 114.9, "w": 60, "h": H}]},
+                  {"text": "5", "x": 58, "y": 194.4, "h": H, "tokens": [{"text": "5", "x": 58, "y": 194.4, "w": 5, "h": H}]},
+                  {"text": long, "x": 67, "y": 192.0, "h": H, "tokens": [{"text": long, "x": 67, "y": 192.0, "w": 250, "h": H}]}]
+        info = {}
+        rows = bom.extract(bom.cells_from_ocr(items, vlines), vlines, info)
+        self.assertEqual([r["item_no"] for r in rows], ["1", "2", "3", "4", "5"])
+        self.assertEqual((rows[3]["part_no"], rows[3]["qty"]), ("0016608250", "6"))
+        self.assertEqual((rows[4]["part_no"], rows[4]["name"]), ("6064-B1-2HD79618-UK#", "テストドア/ブラウン"))
+        q = info["qty"][0]
+        self.assertAlmostEqual(q["x0"], 364.8, delta=1)
+        self.assertAlmostEqual(q["x1"], 430.0, delta=1)
+        self.assertEqual(len(q["rows"]), 5)
+        self.assertLess(q["h"], 9.0)
+
     def test_ocr_code_fixes(self):
         self.assertEqual(bom.ocr_code("HC.Z.1.D.9.0.0.6.1"), "HCZID90061")
         self.assertEqual(bom.ocr_code("0031008.0.0.1"), "0031008001")
