@@ -10,3 +10,4 @@ samples/out/
 .DS_Store
 worker/bomtest-*.csv
 worker/cache/
+worker/bomtest-samples-*

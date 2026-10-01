@@ -278,9 +278,15 @@ def _bom(items, own_no, force, vlines=None, reread=None):
         return [], refs
 
 
-def _rereader(doc, key, p):
+def _rereader(doc, key, p, debug=None):
     i = p["page_no"] - 1
-    return lambda rects: _qty_reread(doc[i], key, i, rects)
+
+    def run(rects):
+        extra = _qty_reread(doc[i], key, i, rects)
+        if debug is not None:  # 調整用：読み直した範囲と結果も残す
+            debug.setdefault("qty_reread", []).append({"page_no": p["page_no"], "rects": rects, "extra": extra})
+        return extra
+    return run
 
 
 def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = None) -> tuple[dict, dict[int, bytes]]:
@@ -326,7 +332,7 @@ def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = 
             f["file_title"] = fields.get("title", "")
             pconf = 0.75 if p["tb_codes"] else 0.4
             rows, refs = _bom(p["items"], f["drawing_no"], force_bom, p["vlines"],
-                              _rereader(doc, key, p) if p["text_source"] == "ocr" else None)
+                              _rereader(doc, key, p, debug) if p["text_source"] == "ocr" else None)
             attrs = {**common, "page": p["page_no"], "tb_codes": p["tb_codes"][:5], **refs}
             drawings.append({"page_no": p["page_no"],
                              "drawing": _drawing(f, "ocr" if p["text_source"] == "ocr" else source, pconf,
@@ -340,7 +346,7 @@ def parse(data: bytes, path: str, force_bom: bool = False, debug: dict | None = 
             conf = 0.75
         rows, refs = _bom(pages[0]["items"] if pages else [], fields.get("drawing_no", ""), force_bom,
                           pages[0]["vlines"] if pages else [],
-                          _rereader(doc, key, pages[0]) if pages and pages[0]["text_source"] == "ocr" else None)
+                          _rereader(doc, key, pages[0], debug) if pages and pages[0]["text_source"] == "ocr" else None)
         attrs = {**common, "tb_codes": pages[0]["tb_codes"][:5] if pages else [], **refs}
         drawings.append({"page_no": 1, "drawing": _drawing(fields, source, conf, needs_ocr, attrs),
                          "pages": [{"page_no": p["page_no"], "text": p["text"], "text_source": p["text_source"]} for p in pages],

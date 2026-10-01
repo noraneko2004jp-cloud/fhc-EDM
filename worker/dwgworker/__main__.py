@@ -134,8 +134,9 @@ def print_bom(path, dr):
               + (f"  → 図面 {r['ref_drawing_no']}" if r.get("ref_drawing_no") else ""))
 
 
-def bomtest(folder, kind, limit, every, skip=(), match=""):
-    """共有フォルダの図面の部品表を試しに読む（DB・サーバーは変えない）。結果は画面と CSV に出す。"""
+def bomtest(folder, kind, limit, every, skip=(), match="", samples=0):
+    """共有フォルダの図面の部品表を試しに読む（DB・サーバーは変えない）。結果は画面と CSV に出す。
+    samples：員数があまり読めなかった PDF を N 件まで、原本と OCR の結果（JSON）をまとめて zip にする（調整用）。"""
     import csv
     from datetime import datetime
 
@@ -145,6 +146,8 @@ def bomtest(folder, kind, limit, every, skip=(), match=""):
     out = Path(f"bomtest-{kind}-{datetime.now():%Y%m%d-%H%M}.csv")
     stats = {"files": 0, "with_bom": 0, "rows": 0, "refs": 0, "errors": 0}
     seen = 0
+    sample_dir = Path(out.stem.replace("bomtest", "bomtest-samples")) if samples and kind == "pdf" else None
+    saved = 0
     with out.open("w", newline="", encoding="utf-8-sig") as fh:  # Excel で文字化けしないよう BOM 付き UTF-8
         w = csv.writer(fh)
         w.writerow(["ファイル", "ページ", "図番", "No", "図番又は品番", "名称・規格", "員数", "材質", "厚さ", "幅", "長さ",
@@ -163,7 +166,9 @@ def bomtest(folder, kind, limit, every, skip=(), match=""):
             stats["files"] += 1
             try:
                 data = source.read_bytes(rel, root)
-                res, _ = parse_dxf.parse(data, full) if kind == "dxf" else parse_pdf.parse(data, full, force_bom=True)
+                debug = {} if sample_dir is not None and saved < samples else None
+                res, _ = parse_dxf.parse(data, full) if kind == "dxf" else \
+                    parse_pdf.parse(data, full, force_bom=True, debug=debug)
             except Exception as e:  # noqa: BLE001
                 stats["errors"] += 1
                 print(f"× {full}: {type(e).__name__}: {e}")
@@ -181,8 +186,23 @@ def bomtest(folder, kind, limit, every, skip=(), match=""):
                                 r.get("part_no", ""), r.get("name", ""), r.get("qty", ""), r.get("material", ""),
                                 r.get("thickness", ""), r.get("width", ""), r.get("length", ""), r.get("ref_drawing_no", ""),
                                 r.get("confidence", ""), " ".join(refs), " ".join(parents), r.get("note", "")])
+            if debug is not None and any(
+                    len(dr.get("bom") or []) >= 3
+                    and sum(1 for r in dr["bom"] if r.get("qty")) < len(dr["bom"]) * 0.5 for dr in res["drawings"]):
+                sample_dir.mkdir(exist_ok=True)
+                name = f"{saved + 1:02d}_" + re.sub(r"[^\w.-]+", "_", Path(rel).stem)[:60]
+                debug.update({"file": full, "drawings": res["drawings"]})
+                (sample_dir / f"{name}.json").write_text(json.dumps(debug, ensure_ascii=False, default=float), encoding="utf-8")
+                (sample_dir / f"{name}.pdf").write_bytes(data)
+                saved += 1
             if stats["files"] >= limit:
                 break
+    if sample_dir is not None and saved:
+        import shutil
+        shutil.copy(out, sample_dir / out.name)
+        z = shutil.make_archive(str(sample_dir), "zip", sample_dir)
+        shutil.rmtree(sample_dir, ignore_errors=True)
+        print(f"\n員数の読めていない図面 {saved} 件の原本と OCR の結果を {Path(z).resolve()} にまとめました")
     print(f"\n読んだファイル {stats['files']} 件 / 部品表あり {stats['with_bom']} 件 / 行 {stats['rows']} / "
           f"関連図面つきの行 {stats['refs']} / 読めなかった {stats['errors']} 件")
     print(f"結果を {out.resolve()} に保存しました（Excel で開けます）")
@@ -201,6 +221,8 @@ def main(argv=None):
     ap.add_argument("--every", type=int, default=1, help="bomtest：見つけたファイルを何件おきに読むか（広く散らして試す）")
     ap.add_argument("--skip", action="append", default=[], help="bomtest：このフォルダ名を含むパスは読まない（何度でも指定可）")
     ap.add_argument("--match", default="", help="bomtest：ファイル名がこの正規表現に合うものだけ読む（例 '^[A-Z]{2,4}[0-9]' で図番で始まるもの）")
+    ap.add_argument("--samples", type=int, default=0,
+                    help="bomtest：員数の読めていない PDF を N 件まで、原本と OCR の結果を zip にまとめる（調整用）")
     ap.add_argument("--minutes", type=float, default=2, help="probe で数える時間（分）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -209,7 +231,7 @@ def main(argv=None):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     if a.cmd == "bomtest":
-        return bomtest(a.file or "", a.kind, a.limit, a.every, a.skip, a.match)
+        return bomtest(a.file or "", a.kind, a.limit, a.every, a.skip, a.match, a.samples)
 
     if a.cmd == "parse":
         from . import parse_dxf, parse_pdf
