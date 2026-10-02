@@ -289,6 +289,12 @@ def main(argv=None):
                 if time.time() >= next_scan:
                     # 巡回が途中で失敗しても、次の巡回は間隔をあけてから。その間にたまった解析を進める
                     next_scan = time.time() + CONFIG.scan_interval_min * 60
+                    # 巡回を始めた時刻も覚えておく：巡回の途中で再起動（更新）されても、最初から巡回し直さずに
+                    # たまっている解析を先に進める（巡回は全体で 30 分ほどかかる。2026-10-02）
+                    try:
+                        stamp.write_text(str(time.time()))
+                    except OSError:
+                        pass
                     do_scan(api)
                     try:
                         stamp.write_text(str(time.time()))
