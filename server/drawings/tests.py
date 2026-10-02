@@ -48,6 +48,26 @@ class WorkerApiTests(TestCase):
         self.assertEqual(self.scan([{"path": "a/UH-1.dxf", "size": 11, "mtime": t}])["changed"], 1)
         self.assertEqual(Job.objects.count(), 1)  # まだ待ち行列にあるので重複させない
 
+    def test_scan_batch_and_mtime_tolerance(self):
+        t = 1_700_000_000.1234567
+        files = [{"path": f"a/F{i:03d}.pdf", "size": 10 + i, "mtime": t} for i in range(30)]
+        self.assertEqual(self.scan(files + [dict(files[0])])["created"], 30)   # 同じパスが 2 回入っていても 1 件
+        self.assertEqual(Job.objects.count(), 30)
+        # 更新日時が 1 秒未満ずれただけ（読み方の違いによる丸め）なら「変化なし」
+        r = self.scan([{**f, "mtime": t + 0.000001} for f in files])
+        self.assertEqual((r["unchanged"], r["changed"], r["created"]), (30, 0, 0))
+        self.assertEqual(Job.objects.count(), 30)
+        Job.objects.update(state=Job.State.DONE)
+        # 2 秒違えば変更あり → 解析し直し。サイズだけ違っても変更あり
+        r = self.scan([{**files[0], "mtime": t + 2}, {**files[1], "size": 999}, files[2]])
+        self.assertEqual((r["changed"], r["unchanged"]), (2, 1))
+        self.assertEqual(Job.objects.filter(state=Job.State.QUEUED).count(), 2)
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        with CaptureQueriesContext(connection) as q:   # 変化なしの 30 件は、件数によらず数回の問い合わせで済む
+            self.scan(files[2:])
+        self.assertLess(len(q), 10)
+
     def test_full_job_cycle_and_search_text(self):
         self.scan([{"path": "design/UH-3600-01_A.dxf", "size": 10, "mtime": time.time()}])
         jobs = post_json(self.client, "/api/internal/jobs/claim", {"worker": "mac", "limit": 5}).json()["jobs"]

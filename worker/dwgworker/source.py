@@ -50,8 +50,24 @@ def _top_ok(name):
     return not CONFIG.include or _n(name) in {_n(x) for x in CONFIG.include}
 
 
-def walk(root=None, use_include=True):
-    """(相対パス, サイズ, 更新UNIX秒) を順に返す。use_include=False なら SCAN_INCLUDE で絞らない（途中のフォルダから巡るとき）。"""
+def _size_mtime(entry):
+    """フォルダの一覧に入っているサイズと更新日時を使う（ファイルサーバーへの問い合わせなし）。
+    e.stat() はファイル 1 件ごとにファイルサーバーへ問い合わせるため、約 2 万 7 千件の巡回に 30 分近くかかっていた
+    （2026-10-02）。一覧に情報がない（古い smbprotocol、リンクなど）ときだけ stat() にする。"""
+    info = getattr(entry, "smb_info", None)
+    try:
+        if info is not None and not entry.is_symlink():
+            return int(info.end_of_file), info.last_write_time.timestamp()
+    except (AttributeError, TypeError, ValueError):
+        pass
+    st = entry.stat()
+    return st.st_size, st.st_mtime
+
+
+def walk(root=None, use_include=True, fast=True):
+    """(相対パス, サイズ, 更新UNIX秒) を順に返す。use_include=False なら SCAN_INCLUDE で絞らない（途中のフォルダから巡るとき）。
+    fast=False：ファイルごとに stat() する（遅い）。フォルダの一覧の更新日時は stat() の値と 100 万分の 1 秒ずれることが
+    あるので、その違いを同じとみなせない古いサーバーに巡回結果を送るときは、こちらを使う。"""
     root = root or CONFIG.source_root
     if not root:
         raise RuntimeError("SOURCE_ROOT が設定されていません")
@@ -74,11 +90,15 @@ def walk(root=None, use_include=True):
                         stack.append(rel)
                 elif PurePosixPath(e.name).suffix.lower() in EXTS:
                     try:
-                        st = e.stat()
+                        if fast:
+                            size, mtime = _size_mtime(e)
+                        else:
+                            st = e.stat()
+                            size, mtime = st.st_size, st.st_mtime
                     except Exception as ex:
                         log.warning("ファイル情報を読めないため飛ばします: %s（%s）", rel, type(ex).__name__)
                         continue
-                    yield rel, st.st_size, st.st_mtime
+                    yield rel, size, mtime
     else:
         base = Path(root)
         for dirpath, dirnames, filenames in os.walk(base):

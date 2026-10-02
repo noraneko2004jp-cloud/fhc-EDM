@@ -66,42 +66,63 @@ def _body(request):
 @worker_api
 def health(request):
     counts = {s: Job.objects.filter(state=s).count() for s in (Job.State.QUEUED, Job.State.RUNNING, Job.State.FAILED)}
-    return JsonResponse({"ok": True, "jobs": counts, "files": SourceFile.objects.count()})
+    # scan_mtime_tolerant：巡回で送られてくる更新日時の秒未満の違いを同じとみなせる（解析役が速い巡回を使ってよい合図）
+    return JsonResponse({"ok": True, "jobs": counts, "files": SourceFile.objects.count(), "scan_mtime_tolerant": True})
+
+
+MTIME_TOLERANCE = dt.timedelta(seconds=1)
 
 
 @require_POST
 @worker_api
 def scan(request):
+    """巡回で見つけたファイルの一覧（1 回 500 件ほど）を受け取り、新規・変更のものを解析待ちにする。
+    1 件ずつ DB を読み書きすると巡回が遅くなるので、まとめて読み、変化なしのものは 1 回の更新で済ませる。"""
     data = _body(request)
     if data is None or not isinstance(data.get("files"), list):
         return JsonResponse({"error": "files の配列が必要です"}, status=400)
     now = timezone.now()
     created = changed = unchanged = skipped = 0
+    seen = {}
     for f in data["files"]:
         path = str(f.get("path", "")).replace("\\", "/").lstrip("/")
         kind = KINDS.get(Path(path).suffix.lower())
         if not path or not kind:
             skipped += 1
             continue
-        size = int(f["size"])
-        mtime = dt.datetime.fromtimestamp(float(f["mtime"]), tz=dt.timezone.utc)
-        with transaction.atomic():
-            obj, is_new = SourceFile.objects.select_for_update().get_or_create(
-                path=path, defaults={"kind": kind, "size": size, "mtime": mtime, "last_seen": now}
-            )
-            if is_new:
-                created += 1
-                Job.objects.create(file=obj)
-                continue
-            if obj.size != size or obj.mtime != mtime or obj.status == SourceFile.Status.MISSING:
+        try:
+            size = int(f["size"])
+            mtime = dt.datetime.fromtimestamp(float(f["mtime"]), tz=dt.timezone.utc)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            skipped += 1
+            continue
+        seen[path] = (kind, size, mtime)
+    with transaction.atomic():
+        existing = {o.path: o for o in SourceFile.objects.select_for_update().filter(path__in=list(seen))}
+        new = [SourceFile(path=p, kind=k, size=s, mtime=m, last_seen=now) for p, (k, s, m) in seen.items() if p not in existing]
+        if new:
+            new = SourceFile.objects.bulk_create(new)
+            Job.objects.bulk_create([Job(file=o) for o in new])
+            created = len(new)
+        same, touched = [], []
+        for path, obj in existing.items():
+            _kind, size, mtime = seen[path]
+            # 更新日時は 1 秒未満の違いを同じとみなす（巡回の読み方を変えたとき、秒未満の丸めの違いで
+            # 全部「変更あり」になって解析し直しになるのを防ぐ）
+            if obj.size != size or abs(obj.mtime - mtime) >= MTIME_TOLERANCE or obj.status == SourceFile.Status.MISSING:
                 changed += 1
-                obj.size, obj.mtime, obj.status, obj.error = size, mtime, SourceFile.Status.PENDING, ""
-                if not obj.jobs.filter(state__in=[Job.State.QUEUED, Job.State.RUNNING]).exists():
-                    Job.objects.create(file=obj)
+                obj.size, obj.mtime, obj.status, obj.error, obj.last_seen = size, mtime, SourceFile.Status.PENDING, "", now
+                obj.save()
+                touched.append(obj)
             else:
-                unchanged += 1
-            obj.last_seen = now
-            obj.save()
+                same.append(obj.pk)
+        if touched:
+            busy = set(Job.objects.filter(file__in=touched, state__in=[Job.State.QUEUED, Job.State.RUNNING])
+                       .values_list("file_id", flat=True))
+            Job.objects.bulk_create([Job(file=o) for o in touched if o.pk not in busy])
+        if same:
+            SourceFile.objects.filter(pk__in=same).update(last_seen=now)
+            unchanged = len(same)
     return JsonResponse({"created": created, "changed": changed, "unchanged": unchanged, "skipped": skipped})
 
 

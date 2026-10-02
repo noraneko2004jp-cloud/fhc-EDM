@@ -36,8 +36,14 @@ def do_scan(api: Api):
     started = time.time()
     buf, total, complete = [], {"created": 0, "changed": 0, "unchanged": 0, "skipped": 0}, False
     try:
+        fast = bool(api.health().get("scan_mtime_tolerant"))
+    except Exception:  # noqa: BLE001
+        fast = False
+    if not fast:
+        log.warning("サーバーが古いため、巡回は遅い方法（ファイルごとに問い合わせ）で行います。Ubuntu を更新してください")
+    try:
         seen = 0
-        for rel, size, mtime in source.walk():
+        for rel, size, mtime in source.walk(fast=fast):
             buf.append({"path": rel, "size": size, "mtime": mtime})
             seen += 1
             if len(buf) >= BATCH:
